@@ -1,0 +1,353 @@
+---
+title: "06_maftools_signature_explore"
+author: "Ming Tang"
+date: "December 13, 2017"
+output: html_document
+---
+
+### convert annovar files to maf files
+
+`cd /rsrch2/genomic_med/krai/mixing_histology_snakemake/11recount_annovar`
+
+```{r}
+library(maftools)
+annovar.files<- as.list(dir(".", pattern= "*annovar.txt"))
+
+
+## some files are empty, so annovarToMaf will give error,
+## use possibly http://www.brodrigues.co/blog/2017-03-24-lesser_known_purrr/
+
+x<- function(f){
+        ofile<- gsub("_recount_annovar.txt", "", f)
+        annovarToMaf(annovar = f, Center = NULL, refBuild = 'hg19', 
+                               tsbCol = "sample", basename = ofile)
+}
+
+purrr::map(annovar.files, possibly(x, otherwise = NA))
+
+
+
+```
+
+merge all the maf files
+
+```{bash}
+cd /rsrch2/genomic_med/krai/mixing_histology_snakemake/11recount_annovar
+awk 'FNR==1 && NR!=1{next;}{print}' *maf > mixing.maf
+
+rsync -avhP railab:mixing_histology_snakemake/11recount_annovar/mixing.maf data/
+```
+
+clean the sample name a bit.
+
+`less -S mixing.maf | sed -E 's/_vs_Pa[0-9]{2}_N//' > mixing_clean.maf`
+
+
+```{r}
+library(maftools)
+mixing.maf<- read.maf(here("data/mixing_clean.maf"))
+
+getGeneSummary(mixing.maf)
+
+samples<- getSampleSummary(mixing.maf)
+samples$Tumor_Sample_Barcode
+
+samples_not_include<- c("Pa25_T1","Pa25_T2", "Pa28_T1", "Pa28_T2", "Pa29_T3",
+                        "Pa32_T1", "Pa32_T2")
+samples_to_keep<- setdiff(samples$Tumor_Sample_Barcode, samples_not_include)
+mixing.maf<- subsetMaf(mixing.maf, tsb= samples_to_keep )
+plotmafSummary(maf = mixing.maf, rmOutlier = TRUE, addStat = 'median', dashboard = TRUE, titvRaw = FALSE)
+```
+
+
+### mutation signature
+
+```{r}
+
+mixing.tnm <- trinucleotideMatrix(maf = mixing.maf, ref_genome = '~/annotations/human/hg19_UCSC_genome/UCSC_hg19_genome.fa', 
+                               prefix = 'chr', add = TRUE, useSyn = TRUE)
+
+# on HPC
+mixing.tnm <- trinucleotideMatrix(maf = mixing.maf, ref_genome = '/scratch/genomic_med/apps/annot/fasta/hg19_UCSC/UCSC_hg19_genome.fa', 
+                               prefix = 'chr', add = TRUE, useSyn = TRUE)
+
+library('NMF')
+mixing.sign<- extractSignatures(mat = mixing.tnm, nTry = 6, plotBestFitRes = FALSE)
+plotSignatures(mixing.sign, contributions = T)
+
+
+oncoplot(maf = mixing.maf, showTumorSampleBarcodes =T, top = 20,
+drawRowBar = T, drawColBar = T)
+
+### cancer genes
+library(here)
+cancer_genes<- read_tsv(here("data/cancer_genes/cancer_gene_kel.txt"), col_names = T)
+
+oncoplot(maf = mixing.maf, showTumorSampleBarcodes = T, top = 100,drawRowBar = T, drawColBar = T, removeNonMutated = F, writeMatrix = T, genes= cancer_genes$symbol)
+
+oncoplot(maf = mixing.maf, showTumorSampleBarcodes = T, top = 10,drawRowBar = T, drawColBar = T, removeNonMutated = F, writeMatrix = T, genes= c("TP53", "RB1", "SYNE1", "KMT2C", "KMT2D", "AR", "KDM5C", "KDR", "PDGFRA","PML", "WT1"), sortByAnnotation = TRUE, annotationDat = mixing_meta, clinicalFeatures = c("patient", "smoking", "gender", "response") )
+
+mixing_meta<- read_tsv("data/mixing_meta.txt", col_names = T)
+
+
+oncoplot(maf = mixing.maf, showTumorSampleBarcodes = T, top = 10, genes = c("KMT2C", "KMT2A", "KMT2D", "TP53", "RB1"),drawRowBar = T, drawColBar = T, removeNonMutated = F, annotationDat = mixing_meta, clinicalFeatures = c("patient", "smoking", "gender", "response"), 
+annotationOrder = c("Pa01", "Pa02", "Pa03", "Pa04", "Pa05", "Pa06", "Pa07"))
+
+```
+
+### cancer gene mutations
+
+```{r}
+
+oncoplot(maf = mixing.maf, showTumorSampleBarcodes = T, top = 1000, drawRowBar = T, drawColBar = T, removeNonMutated = F, writeMatrix = T)
+
+sample_order<- mixing.maf@data$Tumor_Sample_Barcode %>% sort() %>% unique() %>% as.character()
+
+oncoplot(maf = mixing.maf, showTumorSampleBarcodes = T, top = 10, drawRowBar = T, drawColBar = T, removeNonMutated = F, writeMatrix = F, sampleOrder = sample_order)
+
+cancer_gene_mut_df<- mixing.maf@data %>% 
+        inner_join(cancer_gene_mutations, by = c("Chromosome" = "chromosome", "Start_Position" = "start",
+                                                 "End_Position" = "stop", "Reference_Allele" = "read",
+                                                 "Tumor_Seq_Allele2" = "variant")) %>%
+        dplyr::select(Hugo_Symbol, Tumor_Sample_Barcode, Variant_Classification, amino_acid)
+                   
+ 
+cancer_gene_mut_df<- cancer_gene_mut_df %>% 
+        distinct() %>% 
+        mutate_if(is.factor, as.character) %>% 
+        spread(Tumor_Sample_Barcode, Variant_Classification, fill = "")
+
+colnames(cancer_gene_mut_df) %>% unique()
+setdiff(metadata$samples, colnames(cancer_gene_mut_df))
+
+
+cols<- brewer.pal(5, "Dark2")
+col.assign<- setNames(cols, unique(metadata_sorted$cancer_type))
+rownames(metadata_sorted)<- metadata_sorted$samples
+df1<- metadata_sorted[colnames(cancer_gene_mut_mat), "cancer_type", drop = FALSE]
+
+
+mix.ha1<- HeatmapAnnotation(df = df1, col = list(cancer_type = col.assign))
+
+
+alter_fun1 = list(
+    background = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.5, "mm"), h-unit(0.5, "mm"), gp = gpar(fill = "#CCCCCC", col = NA))
+    },
+    Missense_Mutation = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(0.5, "mm"), h-unit(0.5, "mm"), gp = gpar(fill = "#008000", col = NA))
+    }
+)
+
+## color for barplot
+
+col_bar1 = c("Missense_Mutation" = "#008000")
+
+mix.cancer.patient.hp1<- oncoPrint(cancer_gene_mut_mat, get_type = function(x) strsplit(x, ";")[[1]],
+    alter_fun = alter_fun1, col = col_bar1, 
+    column_title = "OncoPrint for mutated cancer genes",
+    heatmap_legend_param = list(title = "Alternations", at = "Missense_Mutation", 
+        labels = "Missense mutation",
+        nrow = 1, title_position = "leftcenter"),
+    show_column_names = TRUE, column_order = rev(metadata$samples),
+    row_names_gp = gpar(fontsize = 10),
+    pct_gp = gpar(fontsize = 10),
+    bottom_annotation = mix.ha1)
+
+draw(mix.cancer.patient.hp1, heatmap_legend_side = "bottom", annotation_legend_side = "bottom")
+
+```
+
+
+### mutational pattern 
+
+
+convert maf files to vcf files.
+
+```{bash}
+cd /rsrch2/genomic_med/krai/mixing_histology_snakemake/11recount_annovar
+
+find *N.maf | parallel 'perl ~/vcf2maf/maf2vcf.pl --input-maf {} --output-dir . --ref-fa /scratch/genomic_med/apps/annot/bundle/human_g1k_v37_decoy.fasta'
+
+cd Users/mtang1/projects/mixing_histology_lung_cancer/data/vcfs
+
+rsync -avhP railab:mixing_histology_snakemake/11recount_annovar/ .
+```
+
+```{r}
+library(MutationalPatterns)
+ref_genome<- "BSgenome.Hsapiens.UCSC.hg19"
+library(ref_genome, character.only = TRUE)
+
+vcf_files<- list.files(here("data/vcfs"), pattern = "*.vcf", full.names = TRUE)
+basename(vcf_files)
+sample_names<- gsub("_vs_.+.vcf", "", basename(vcf_files))
+sample_names<- sample_names %>% str_replace("_", "")
+vcfs<- read_vcfs_as_granges(vcf_files, sample_names, genome = ref_genome)
+
+## change the chromosome names from 1 to chr1 etc.
+# http://kasperdanielhansen.github.io/genbioconductor/html/GenomicRanges_seqinfo.html
+
+#vcfs <- lapply(vcfs, function(x) keepSeqlevels(x, seqlevels(BSgenome.Hsapiens.UCSC.hg19)))
+
+#vcfs <- lapply(vcfs, function(x) seqlengths(x)<- seqlengths(BSgenome.Hsapiens.UCSC.hg19))
+
+
+mut_mat<- mut_matrix(vcf_list = vcfs, ref_genome = ref_genome)
+plot_96_profile(mut_mat[,c(1:19)], ymax = 0.1) 
+plot_96_profile(mut_mat[,c(11:20)], ymax = 0.1)
+
+pdf("results/mutation_profile.pdf", 10, 12)
+plot_96_profile(mut_mat)
+dev.off()
+
+pdf("results/Fig2A.pdf", 10, 12)
+plot_96_profile(mut_mat)
+dev.off()
+
+#install.packages("lsa")
+library(lsa)
+cosine(mut_mat[,1], mut_mat[,2])
+
+pdf("results/mutation_spectrum_heatmap.pdf", 8, 6)
+Heatmap(cosine(mut_mat), cluster_columns = F, cluster_rows = F, name = "cosine distance\nfor mutation spectrum", top_annotation = mix_ha, cell_fun = cell_fun,
+        rect_gp = gpar(type = "none") )
+dev.off()
+library(corrplot)
+
+corrplot(cosine(mut_mat), method="circle", type="lower")
+```
+
+### fit 96 mutation profiles to known mutations signatures
+
+```{r}
+sp_url <- paste("http://cancer.sanger.ac.uk/cancergenome/assets/","signatures_probabilities.txt", sep = "")
+
+sp_url <- paste("https://cancer.sanger.ac.uk/cancergenome/assets/", "signatures_probabilities.txt", sep = "")
+cancer_signatures = read.table(sp_url, sep = "\t", header = TRUE)
+
+#cancer_signatures<- read.table(sp_url, sep = "\t", header = TRUE)
+
+write_tsv(cancer_signatures, here("data/cosmic_cancer_signatures.txt"))
+
+# Reorder (to make the order of the trinucleotide changes the same)
+cancer_signatures<- cancer_signatures[order(cancer_signatures[,1]),]
+# Only signatures in matrix
+cancer_signatures<- as.matrix(cancer_signatures[,4:33])
+
+fit_res <- fit_to_signatures(mut_mat, cancer_signatures)
+
+select <- which(rowSums(fit_res$contribution) > 0)
+select<- order(rowSums(fit_res$contribution), decreasing = TRUE)[1:10]
+## use top10 for plotting contribution.
+
+plot_contribution(fit_res$contribution[select,], cancer_signatures[,select], 
+                  coord_flip = FALSE, mode = "absolute")
+
+pdf("results/Fig2C.pdf", width= 7, height = 5)
+plot_contribution(fit_res$contribution[select,], cancer_signatures[,select], 
+                  coord_flip = FALSE, mode = "relative") + 
+        theme(axis.text=element_text(size=10, color= "black"),
+              axis.text.x = element_text(angle = 90, vjust = 0.2,size = 12),
+              axis.title=element_text(size=16,face="bold"),
+              plot.title = element_text(size=18))
+dev.off()
+plot_compare_profiles(mut_mat[,1], fit_res$reconstructed[,1],
+                      profile_names = c("Original","Reconstructed \n cancer signatures"))
+
+plot_compare_profiles(mut_mat[,2], fit_res$reconstructed[,2],
+                      profile_names = c("Original","Reconstructed \n cancer signatures"))
+
+
+
+
+head(fit_res$contribution)
+
+signature_individual<- function(fit_res){
+        df<- as.data.frame(fit_res$contribution)
+}
+df<- as.data.frame(fit_res$contribution)
+df$Signature<- rownames(df)
+
+df  %>% gather("sample", "contribution", 1:19) %>% filter(contribution > 0) %>%
+        ggplot(aes(x=sample, y = contribution, fill = Signature)) + geom_bar(stat = "identity", position = "fill")
+
+
+head(fit_res$contribution)
+signature_mat<- fit_res$contribution
+colSums(signature_mat)
+
+sig_mat_scaled<- t(t(signature_mat)/colSums(signature_mat) * 100)
+
+
+cell_fun = function(j, i, x, y, width, height, fill) {
+	grid.rect(x = x, y = y, width = width * 0.95, height = height*0.95, 
+		gp = gpar(col = "grey", fill = fill, lty = 1, lwd = 0.5))
+}
+
+library(readr)
+mix_meta<- read_tsv(here("data/final_meta.tsv"), col_names = T)
+mix_meta<- mix_meta %>% 
+        mutate(cancer_type = case_when(
+                cancer_type == "large cell" ~ "LCNEC",
+                cancer_type == "adeno" ~ "LUAD",
+                cancer_type == "squamous cell" ~ "LUSC",
+                cancer_type == "small cell" ~ "SCLC",
+                cancer_type == "unknown" ~ "NSCLC-NOS"
+        ))
+
+mix_meta<- as.data.frame(mix_meta)
+library(RColorBrewer)
+set.seed(1)
+cols<- brewer.pal(5, "Dark2")
+cols.patient<- brewer.pal(9, "Paired")
+
+col.assign<- setNames(cols, unique(mix_meta$cancer_type))
+patient.assign<- setNames(cols.patient, unique(mix_meta$patient))
+rownames(mix_meta)<- mix_meta$ID
+df<- mix_meta[colnames(sig_mat_scaled), c("cancer_type", "patient"), drop = FALSE]
+
+library(ComplexHeatmap)
+mix_ha<- HeatmapAnnotation(df = df, col = list(cancer_type = col.assign, patient = patient.assign))
+pdf("results/Fig2B.pdf", 8, 6)
+Heatmap(sig_mat_scaled, cluster_rows = F, cluster_columns = F, 
+        rect_gp = gpar(type = "none"), 
+        cell_fun = cell_fun,
+        name = "% contribution",
+        top_annotation = mix_ha)
+dev.off()
+
+
+Heatmap(sig_mat_scaled[indx,], cluster_rows = F, cluster_columns = F, 
+        rect_gp = gpar(type = "none"), 
+        cell_fun = cell_fun,
+        name = "% contribution",
+        top_annotation = mix_ha)
+```
+
+stacked barplot 
+```{r}
+library(tibble)
+
+indx<- order(rowSums(sig_mat_scaled), decreasing = TRUE)[1:10]
+
+colSums(sig_mat_scaled[indx,])
+
+pdf("results/Fig2C.pdf", width= 7, height = 5)
+sig_mat_scaled[indx,] %>% 
+        as.data.frame() %>%
+        rownames_to_column(var="signature") %>%
+        mutate(signature=factor(signature, levels = c("Signature.1", "Signature.2", "Signature.3",
+                                                     "Signature.4", "Signature.6","Signature.7","Signature.13", "Signature.16", "Signature.21", "Signature.24"))) %>%
+        gather(key = "sample", value="contribution", -signature) %>%
+        ggplot(aes(x=sample, y = contribution, fill = signature)) +
+        geom_bar(stat = "identity", position = "stack") +
+        theme_bw(base_size = 18) +
+        xlab("") + 
+        theme(axis.text=element_text(size=10, color= "black"),
+              axis.text.x = element_text(angle = 90, vjust = 0.2,size = 12),
+              axis.title=element_text(size=16,face="bold"),
+              plot.title = element_text(size=18)) 
+dev.off()
+```
+

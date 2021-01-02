@@ -1,0 +1,925 @@
+---
+title: "2017-04-21-CCLE-lung_rnaseq"
+author: "Ming Tang"
+date: "April 21, 2017"
+output: html_document
+---
+
+```{r}
+
+
+library(tidyverse)
+library(here)
+
+CCLE_lung_meta<- read_tsv(here("data/CCLE_rnaseq/CCLE_lung_meta.txt"), col_names = T)
+
+CCLE_lung_meta<- CCLE_lung_meta %>% 
+        dplyr::rename(bam_name = `Comment[ASSOCIATED_FILE_NAME]`, subtype = `FactorValue[disease]`)
+
+head(CCLE_lung_meta)
+
+setwd("~/projects/mix_histology/data/CCLE_rnaseq/counts")
+counts.files<- as.list(dir("~/projects/mix_histology/data/CCLE_rnaseq/counts", pattern= "*.cnt"))
+
+## need to add the file name into a column
+counts_datlist <- lapply(counts.files, function(f) {
+        dat = read.table(f, header =F, sep ="\t", quote = "\"")
+        sample = gsub("_featureCount.cnt", "", f)
+        names(dat)<- c("GeneID", sample)
+        return(dat)
+})
+
+CCLE_counts<- reduce(counts_datlist, left_join, by = "GeneID")
+
+CCLE.cnt<- as.matrix(CCLE_counts %>% dplyr::select(-GeneID))
+rownames(CCLE.cnt)<- gsub("\\.[0-9]+", "", CCLE_counts$GeneID)
+
+head(CCLE_lung_meta)
+coldata<- CCLE_lung_meta %>% dplyr::rename(sample = bam_name) %>% 
+        mutate(sample = gsub(".bam", "", sample)) %>% as.data.frame()
+
+rownames(coldata)<- coldata$sample
+coldata<- coldata[,2, drop =F]
+coldata$subtype<- as.factor(coldata$subtype)
+
+rownames(coldata)
+
+CCLE.cnt <- CCLE.cnt[, rownames(coldata)]
+## same order of the sample name
+all(rownames(coldata) == colnames(CCLE.cnt))
+
+library("DESeq2")
+dds <- DESeqDataSetFromMatrix(countData = CCLE.cnt,
+                              colData = coldata,
+                              design = ~ subtype)
+dds
+
+##dds object is loaded
+load(here("data/CCLE_lung_cancer_dds.rda"))
+library(SummarizedExperiment)
+
+CCLE_meta<- colData(dds) %>% as.data.frame() 
+## add gene symbol to the feature data
+library(clusterProfiler)
+library(org.Hs.eg.db)
+keytypes(org.Hs.eg.db)
+
+featureData <- data.frame(gene=rownames(CCLE.cnt))
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+mcols(dds)
+
+```
+
+### pre-filtering low counts
+
+```{r}
+dds <- dds[ rowSums(counts(dds)) > 1, ]
+
+## at least 5 sample has counts >=5
+dds <- dds[ rowSums(counts(dds) >= 5) >= 5, ]
+```
+
+if you have many samples (e.g. 100s), the rlog function might take too long, and so the vst function will be a faster choice. The rlog and VST have similar properties, but the rlog requires fitting a shrinkage term for each sample and each gene which takes time. See the DESeq2 paper for more discussion on the differences
+
+
+```{r}
+## too long!
+rld <- rlog(dds, blind=FALSE)
+
+vsd.fast <- vst(dds, blind=FALSE)
+
+plotPCA(vsd.fast, intgroup=c("subtype"))
+plotPCA(vsd.fast, intgroup=c("subtype"), ntop = 36159)
+
+pcaData <- plotPCA(vsd.fast, intgroup=c("subtype"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(PC1, PC2, color=subtype, shape= subtype)) +
+        geom_point(size= 2.5) +
+        xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+        ylab(paste0("PC2: ",percentVar[2],"% variance")) +
+        ggtitle("PCA plot for CCLE lung cancer RNAseq normalized counts") +
+        coord_fixed() +
+        theme_classic(base_size = 14)
+
+
+```
+
+```{r}
+
+normalized_counts<- assay(vsd.fast)
+boxplot(normalized_counts)
+
+```
+
+### differential expression among different subtypes
+
+```{r}
+dds <- DESeq(dds)
+res <- results(dds, contrast = c("subtype", "small cell lung carcinoma", "lung adenocarcinoma"))
+res1 <- results(dds, contrast = c("subtype", "squamous cell lung carcinoma", "lung adenocarcinoma"))
+res2 <- results(dds, contrast = c("subtype", "large cell lung carcinoma", "lung adenocarcinoma"))
+res3 <- results(dds, contrast = c("subtype", "large cell lung carcinoma", "small cell lung carcinoma"))
+res4 <- results(dds, contrast = c("subtype", "squamous cell lung carcinoma", "small cell lung carcinoma"))
+res5 <- results(dds, contrast = c("subtype", "squamous cell lung carcinoma", "large cell lung carcinoma"))
+
+dim(res)
+
+gene_symbol<- AnnotationDbi::select(org.Hs.eg.db, keys=rownames(res), 
+                                    columns="SYMBOL", keytype="ENSEMBL")
+head(res)
+
+res$ENSEMBL <- rownames(res)
+res1$ENSEMBL <- rownames(res1)
+res2$ENSEMBL <- rownames(res2)
+res3$ENSEMBL <- rownames(res3)
+res4$ENSEMBL <- rownames(res4)
+res5$ENSEMBL <- rownames(res5)
+
+
+res_anno<- as.data.frame(res) %>% left_join(gene_symbol) %>% na.omit()
+res1_anno<- as.data.frame(res1) %>% left_join(gene_symbol) %>% na.omit()
+res2_anno<- as.data.frame(res2) %>% left_join(gene_symbol) %>% na.omit()
+res3_anno<- as.data.frame(res3) %>% left_join(gene_symbol) %>% na.omit()
+res4_anno<- as.data.frame(res4) %>% left_join(gene_symbol) %>% na.omit()
+res5_anno<- as.data.frame(res5) %>% left_join(gene_symbol) %>% na.omit()
+
+
+ggplot(res_anno, aes(x = pvalue)) + geom_histogram(color = "white")
+ggplot(res1_anno, aes(x = pvalue)) + geom_histogram(color = "white")
+ggplot(res2_anno, aes(x = pvalue)) + geom_histogram(color = "white")
+ggplot(res3_anno, aes(x = pvalue)) + geom_histogram(color = "white")
+ggplot(res4_anno, aes(x = pvalue)) + geom_histogram(color = "white")
+ggplot(res5_anno, aes(x = pvalue)) + geom_histogram(color = "white")
+
+arrange(res1_anno, padj) %>% head()
+sum(res_anno$padj < 0.05)
+sum(res1_anno$padj < 0.05)
+sum(res2_anno$padj < 0.05)
+sum(res3_anno$padj < 0.05)
+sum(res4_anno$padj < 0.05)
+sum(res5_anno$padj < 0.05)
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+
+plot_volcano<- function(toptable){
+       results<- as.data.frame(toptable)
+       results<- mutate(results, sig=ifelse(padj< 0.05, "FDR<0.05", "Not Sig"))
+
+       p<-ggplot(results, aes(log2FoldChange, -log10(pvalue))) +
+               geom_point(aes(col=sig)) +
+               scale_color_manual(values=c("red", "black")) +
+               theme_bw(base_size = 14) +
+               geom_vline(xintercept = c(-2,2))
+       p<- p+ geom_text_repel(data= dplyr::filter(results, padj < 0.005, abs(log2FoldChange) >=4), aes(label=SYMBOL)) + theme_bw(base_size = 14)
+       # plot(p)
+
+}
+
+plot_volcano(res_anno) + ggtitle("small cell vs adenocarcinoma")
+plot_volcano(res1_anno) + ggtitle("squamous vs adenocarcinoma")
+plot_volcano(res2_anno) + ggtitle("large cell vs adenocarcinoma")
+plot_volcano(res3_anno) + ggtitle("large cell vs small cell")
+plot_volcano(res4_anno) + ggtitle("squamous vs small cell")
+plot_volcano(res5_anno) + ggtitle("squamous vs large cell")
+
+plotMA(res1, ylim=c(-4,4))
+
+res_anno %>% head()
+
+```
+
+
+### Heatmap
+
+
+```{r}
+coldata
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(genefilter)
+assay(vsd.fast)[1:6,1:6]
+
+X<- assay(vsd.fast)
+
+## center X
+X<- t(scale(t(X),center=TRUE,scale=FALSE))
+
+rv<- rowVars(X)
+## select the top 500 most variable genes for clustering
+idx<- order(-rv)[1:500]
+
+
+subtype.cols<- brewer.pal(4, "Dark2")
+subtype.cols.assigned<- setNames(subtype.cols, unique(as.character(coldata$subtype)))
+
+
+## Heatmap annotation
+
+CCLE.ha<- HeatmapAnnotation(df = coldata, 
+                       col = list(subtype = subtype.cols.assigned))
+
+Heatmap(X[idx,], name = "log2 RNAseq\nscaled counts", 
+        show_row_names = FALSE, show_column_names = FALSE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE, 
+        clustering_distance_rows = "pearson",
+        clustering_distance_columns = "pearson",
+        clustering_method_rows = "complete",
+        clustering_method_columns = "complete",
+        top_annotation = CCLE.ha)
+```
+
+### SVD and PCA
+
+```{r}
+##SVD to get PCs
+sv<- svd(t(X))
+U<- sv$u
+V<- sv$v
+D<- sv$d
+Z<- t(X)%*%V
+
+variance_explained_each_PC<- function(x){
+        var.list= list()
+        varex = 0
+        cumvar = 0
+        denom = sum(x^2)
+        for(i in 1:length(x)){
+                varex[i] = x[i]^2/denom
+                cumvar[i] = sum(x[1:i]^2)/denom
+        }
+        var.list$varex<- varex
+        var.list$cumvar<- cumvar
+        var.list
+}
+
+### screen plot 
+screen.plot<- function(var.list){
+        par(mfrow=c(1,2))
+        plot(1:length(var.list$varex), var.list$varex *100,type="h",
+             lwd=2,xlab="PC",ylab="% Variance Explained")
+        plot(1:length(var.list$cumvar),var.list$cumvar,type="h",
+             lwd=2,xlab="PC",ylab="Cummulative Variance Explained")
+        
+}
+
+screen.plot(variance_explained_each_PC(D))
+
+pc_dat<- data.frame(subtype = coldata$subtype, PC1 = Z[,1], PC2 = Z[,2])
+
+## make figure with ggplot2
+library(ggplot2)
+library(ggthemes)
+ggplot(pc_dat, aes(x=PC1, y=PC2, col=subtype, shape = subtype)) + 
+        geom_point(size = 3) + 
+        scale_shape_manual(values=c(19, 4, 8, 3)) + 
+        theme_bw(base_size = 14) +
+        theme(panel.border = element_blank(), 
+              panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(), 
+              axis.line.x = element_line(color="black", size = 0.6),
+              axis.line.y = element_line(color="black", size = 0.6)) +
+        ggtitle("PCA plot for CCLE lung cancer RNAseq")
+
+```
+
+```{r}
+variations.3PC<- apply(abs(V[,1:3]), 1, max)
+
+## order according to the loadings and choose the top 500 genes
+genes.3PC<- order(-variations.3PC)[1:500]
+
+Heatmap(X[genes.3PC,], name = "log2 RNAseq\nscaled counts", 
+        show_row_names = FALSE, show_column_names = FALSE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE, 
+        clustering_distance_rows = "pearson",
+        clustering_distance_columns = "pearson",
+        clustering_method_rows = "complete",
+        clustering_method_columns = "complete",
+        top_annotation = CCLE.ha)
+
+### clustering first
+
+##### do hclust
+make_hc<- function(x, distance_measure, linkage_method){
+        if (distance_measure == "pearson"){
+                ## cor calculate for columns, needs to transpose x first
+                distance <- as.dist(1-cor(t(x), method = "pearson"))
+                hc<- hclust(distance, method = linkage_method)
+
+        } else {
+        ## dist calculates for rows
+        distance<- dist(x, method = distance_measure)
+        hc<- hclust(distance, method = linkage_method)
+
+        }
+        return (hc)
+
+}
+
+## row is regions(genes)
+hc_row<- make_hc(X[genes.3PC,], "pearson", "complete") 
+row_dend<- as.dendrogram(hc_row)
+
+## column is sample
+
+hc_col<- make_hc(t(X[genes.3PC,]), "pearson", "complete")
+col_dend<- as.dendrogram(hc_col)
+
+
+library(dendextend)
+
+row_dend<- color_branches(row_dend, k = 5)
+col_dend<- color_branches(col_dend, k = 5)
+
+hp<- Heatmap(X[genes.3PC,], show_row_names = FALSE, show_column_names = FALSE,
+        name="log2 RNAseq\nscaled counts", 
+        row_dend_reorder = T, column_dend_reorder = T, 
+        cluster_rows = row_dend,
+        cluster_columns = col_dend,
+        top_annotation = CCLE.ha,
+        split = 5,
+        use_raster = TRUE,
+        raster_quality = 3)
+
+hp
+```
+
+### retreive genes for the clusters
+
+```{r}
+set.seed(100)
+order_list<- row_order(hp)
+lapply(order_list, function(x) length(x))
+
+extract_genes<- function(hp, mat){
+        order_list<- row_order(hp)
+        cluster1<- mat[order_list[[1]],]
+        cluster2<- mat[order_list[[2]],]
+        cluster3<- mat[order_list[[3]],]
+        cluster4<- mat[order_list[[4]],]
+        cluster5<- mat[order_list[[5]],]
+        return (list(cluster1, cluster2, cluster3, cluster4, cluster5))
+
+}
+
+all.genes<- extract_genes(hp, X[genes.3PC,])
+
+map(map(all.genes, rownames), bitr, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb="org.Hs.eg.db", drop = FALSE)
+
+
+```
+
+### Pathway analysis
+
+```{r}
+library(clusterProfiler)
+gene_list<- map(map(all.genes, rownames), bitr, fromType = "ENSEMBL", toType = "ENTREZID", OrgDb="org.Hs.eg.db", drop = TRUE)
+
+ego <- enrichGO(gene         = gene_list[[1]],
+                OrgDb         = org.Hs.eg.db,
+                keytype       = 'ENSEMBL',
+                ont           = "CC",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05)
+head(ego)
+dotplot(ego)
+
+kk <- enrichKEGG(gene         = gene_list[[5]]$ENTREZID,
+                 organism     = 'hsa',
+                 pvalueCutoff = 0.05)
+
+dotplot(kk)
+
+```
+
+prepare for GSEA analysis:
+
+```{r}
+assay(vsd.fast)[1:5, 1:5]
+all.equal(colnames(assay(vsd.fast)), as.character(rownames(coldata)))
+gene_symbol<- AnnotationDbi::select(org.Hs.eg.db, keys=rownames(assay(vsd.fast)), 
+                                    columns="SYMBOL", keytype="ENSEMBL")
+
+Hugo_genes<- gene_symbol %>% distinct(ENSEMBL, .keep_all =T)
+mat_all <- assay(vsd.fast)
+
+library(stringr)          
+# "small cell vs adenocarcinoma"
+comparison<- c("small cell lung carcinoma", "lung adenocarcinoma")
+comparison_name<- str_replace_all(comparison, " ", "_")
+oprefix<- paste(str_replace_all(comparison, " ", "_"),  collapse  = "_vs_")
+
+index<- which(coldata$subtype %in% comparison)
+mat<- mat_all[, index]
+labels<- coldata[index,]
+labels<- str_replace_all(labels, " ", "_") 
+sample_num<- length(index)
+
+## write the cls file
+fileConn<- file(paste0(oprefix, ".cls"), "w")
+line1<- c(sample_num, 2, 1)
+line2<- c("#",comparison_name)
+line3<- labels
+writeLines(c(paste(line1, collapse = "\t"), paste(line2, collapse = "\t"), paste(line3, collapse = "\t")), fileConn)
+close(fileConn)
+
+## write the gct file
+
+exp_df<- as.data.frame(mat)
+exp_df$ENSEMBL <- rownames(exp_df)
+
+exp_df<- left_join(exp_df, Hugo_genes) %>% filter(!is.na(SYMBOL)) %>% dplyr::select(- ENSEMBL) %>%
+        dplyr::rename( Name = SYMBOL) %>% mutate( Description = "na") %>% 
+        dplyr::select(Name, Description, everything()) 
+
+fileConn<- file(paste0(oprefix, ".gct"), "w")
+line1<- "#1.2"
+line2<- c(nrow(exp_df), sample_num)
+writeLines(c(paste(line1, collapse = "\t"), paste(line2, collapse = "\t")), fileConn)
+write.table(exp_df, file = fileConn, sep = '\t', quote =F)
+close(fileConn)
+
+###### make a function
+make_gct_cls_file<- function(comparison){
+        comparison_name<- str_replace_all(comparison, " ", "_")
+        oprefix<- paste(str_replace_all(comparison, " ", "_"),  collapse  = "_vs_")
+        
+        index<- which(coldata$subtype %in% comparison)
+        mat<- mat_all[, index]
+        labels<- coldata[index,]
+        labels<- str_replace_all(labels, " ", "_") 
+        sample_num<- length(index)
+        
+        ## write the cls file
+        fileConn<- file(paste0(oprefix, ".cls"), "w")
+        line1<- c(sample_num, 2, 1)
+        line2<- c("#",comparison_name)
+        line3<- labels
+        writeLines(c(paste(line1, collapse = "\t"), paste(line2, collapse = "\t"), paste(line3, collapse = "\t")), fileConn)
+        close(fileConn)
+        
+        ## write the gct file
+        
+        exp_df<- as.data.frame(mat)
+        exp_df$ENSEMBL <- rownames(exp_df)
+        
+        exp_df<- left_join(exp_df, Hugo_genes) %>% filter(!is.na(SYMBOL)) %>% dplyr::select(- ENSEMBL) %>%
+        dplyr::rename( Name = SYMBOL) %>% mutate( Description = "na") %>% 
+        dplyr::select(Name, Description, everything()) 
+        
+        fileConn<- file(paste0(oprefix, ".gct"), "w")
+        line1<- "#1.2"
+        line2<- c(nrow(exp_df), sample_num)
+        writeLines(c(paste(line1, collapse = "\t"), paste(line2, collapse = "\t")), fileConn)
+        write.table(exp_df, file = fileConn, sep = '\t', quote =F, row.names = F)
+        close(fileConn)
+        
+}
+
+comparison<- c("small cell lung carcinoma", "lung adenocarcinoma")
+comparison1<- c("large cell lung carcinoma", "lung adenocarcinoma")
+comparison2<- c("large cell lung carcinoma", "small cell lung carcinoma")
+comparison3<- c("squamous cell lung carcinoma", "lung adenocarcinoma")
+comparison4<- c("squamous cell lung carcinoma", "small cell lung carcinoma")
+comparison5<- c("squamous cell lung carcinoma", "large cell lung carcinoma")
+
+setwd("~/projects/mix_histology/results/2017-04-28-GSEA/")
+make_gct_cls_file(comparison)
+make_gct_cls_file(comparison1)
+make_gct_cls_file(comparison2)
+make_gct_cls_file(comparison3)
+make_gct_cls_file(comparison4)
+make_gct_cls_file(comparison5)
+
+# "squamous vs adenocarcinoma"
+# "large cell vs adenocarcinoma"
+# "large cell vs small cell"
+# "squamous vs small cell"
+#"squamous vs large cell"
+```
+
+
+```{r}
+make_hc<- function(x, distance_measure, linkage_method){
+        if (distance_measure == "pearson"){
+                ## cor calculate for columns, needs to transpose x first
+                distance <- as.dist(1-cor(t(x), method = "pearson"))
+                hc<- hclust(distance, method = linkage_method)
+
+        } else {
+        ## dist calculates for rows
+        distance<- dist(x, method = distance_measure)
+        hc<- hclust(distance, method = linkage_method)
+
+        }
+        return (hc)
+
+}
+
+comparison
+
+cols<- c("red", "blue", "black", "green")
+make_dend<- function(comparison){
+        index<- which(coldata$subtype %in% comparison)
+        mat<- mat_all[, index]
+        labels<- coldata[index,]
+        labels<- str_replace_all(labels, " ", "_")
+        hc<- make_hc(t(mat), "pearson", "complete")
+        dend<- hc %>% as.dendrogram() %>% sort(type = "nodes")
+        ind<- match(labels(dend), rownames(coldata))
+        subtype.ind<- coldata$subtype[ind]
+
+        library(rafalib)
+
+        labels_colors(dend)<- cols[as.numeric(as.factor(subtype.ind))]
+
+        dend <- color_branches(dend, k = 2)
+        plot(dend)
+        
+}
+
+make_dend(comparison)
+make_dend(comparison1)
+make_dend(comparison2)
+make_dend(comparison3)
+make_dend(comparison4)
+make_dend(comparison5)
+
+
+index<- which(coldata$subtype %in% comparison5)
+mat<- mat_all[, index]
+labels<- coldata[index,]
+labels<- str_replace_all(labels, " ", "_")
+hc<- make_hc(t(mat), "pearson", "complete")
+plot(hc)
+labels(hc)
+
+library(dendextend)
+dend<- hc %>% as.dendrogram() %>% sort(type = "nodes")
+plot(dend)
+
+labels(dend)
+## now, no colors
+labels_colors(dend)
+
+## I want to color according to subtype
+coldata
+
+ind<- match(labels(dend), rownames(coldata))
+
+subtype.ind<- coldata$subtype[ind]
+
+## change the dendrogram label
+library(RColorBrewer)
+display.brewer.all()
+
+cols<-  brewer.pal(4, "Paired")
+library(rafalib)
+
+labels_colors(dend)<- cols[as.numeric(as.factor(subtype.ind))]
+
+dend <- color_branches(dend, k = 2)
+plot(dend)
+```
+
+
+### TCGA RNAseq data
+
+```{r}
+library(SummarizedExperiment)
+setwd("~/projects/mix_histology/data/TCGA_rna/")
+load("TCGA_lung_rna.rda")
+
+LUAD_rna_data
+LUSC_rna_data
+
+assay(LUAD_rna_data)[1:6, 1:6]
+colData(LUAD_rna_data) %>% as_tibble() %>% .$definition %>% table()
+colData(LUSC_rna_data) %>% as_tibble() %>% .$definition %>% table()
+colData(LUSC_rna_data) %>% as_tibble() %>% .$subtype_Smoking.Status %>% table()
+colData(LUSC_rna_data) %>% as_tibble() %>% .$gender %>% table()
+colData(LUSC_rna_data) %>% as_tibble() %>% .$name %>% table()
+
+all.equal( rowData(LUAD_rna_data), rowData(LUSC_rna_data))
+dim(assay(LUAD_rna_data))
+dim(assay(LUSC_rna_data))
+
+```
+
+### merge count table
+
+```{r}
+LUAD_count<- assay(LUAD_rna_data)
+
+## column name the same order with meta data
+all.equal(colnames(LUAD_count), colData(LUAD_rna_data)$barcode)
+
+LUAD_coldata<- colData(LUAD_rna_data)[, c("sample", "gender", "name", "definition", "subtype_Smoking.Status")]
+
+LUSC_count<- assay(LUSC_rna_data)
+all.equal(colnames(LUSC_count), colData(LUSC_rna_data)$barcode)
+
+LUSC_coldata<- colData(LUSC_rna_data)[, c("sample", "gender", "name", "definition", "subtype_Smoking.Status")]
+
+lung_cancer_counts<- cbind(LUAD_count, LUSC_count)
+lung_coldata<- rbind(LUAD_coldata, LUSC_coldata)
+
+all.equal(colnames(lung_cancer_counts), rownames(lung_coldata))
+```
+
+### DESeq object
+
+```{r}
+library("DESeq2")
+dds_lung <- DESeqDataSetFromMatrix(countData = lung_cancer_counts,
+                              colData = lung_coldata,
+                              design = ~ definition + name)
+dds_lung
+
+## add gene symbol to the feature data
+library(clusterProfiler)
+library(org.Hs.eg.db)
+keytypes(org.Hs.eg.db)
+
+## 1:many mapping, let's annotate the final res table, not now.
+gene_symbol_lung<- AnnotationDbi::select(org.Hs.eg.db, keys=rownames(lung_cancer_counts), 
+                                    columns="SYMBOL", keytype="ENSEMBL")
+featureData_lung <- data.frame(gene=rownames(lung_cancer_counts))
+mcols(dds_lung) <- DataFrame(mcols(dds_lung), featureData_lung)
+mcols(dds_lung)
+
+## at least 1% of total 1145 samples has counts >=5
+dds_lung <- dds_lung[ rowSums(counts(dds_lung) >= 5) >= 115, ]
+
+```
+
+```{r}
+vsd.fast_lung <- vst(dds_lung, blind=FALSE)
+
+plotPCA(vsd.fast_lung, intgroup=c("definition", "name")) 
+
+pcaData <- plotPCA(vsd.fast_lung, intgroup=c("definition", "name"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(PC1, PC2, color= name, shape= definition)) +
+  geom_point(size=2) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+        scale_shape_manual(values=c(19,  4, 8 )) +
+  coord_fixed() + theme_classic(base_size = 14)
+
+plotPCA(vsd.fast_lung, intgroup=c("subtype"), ntop = 36159)
+```
+
+### Heatmap
+
+```{r}
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(genefilter)
+assay(vsd.fast_lung)[1:6,1:6]
+
+Y<- assay(vsd.fast_lung)
+
+## center Y
+Y<- t(scale(t(Y),center=TRUE,scale=FALSE))
+
+sv<- svd(t(Y))
+U<- sv$u
+V<- sv$v
+D<- sv$d
+Z<- t(Y)%*%V
+
+screen.plot(variance_explained_each_PC(D))
+
+
+library(RColorBrewer)
+gender.cols<- c("red", "blue")
+name.cols<- c("red", "green")
+definition.cols<- brewer.pal(3, "Dark2")
+smoking.cols<- brewer.pal(4, "Dark2")
+
+lung_coldata<- as.data.frame(lung_coldata)
+library(stringr)
+lung_coldata$subtype_Smoking.Status<- str_replace(lung_coldata$subtype_Smoking.Status, "\\[Not Available\\]", "NA")
+
+lung_coldata$subtype_Smoking.Status<- str_replace(lung_coldata$subtype_Smoking.Status, "N/A", "NA")
+lung_coldata$subtype_Smoking.Status<- str_replace(lung_coldata$subtype_Smoking.Status, "<NA>", "NA")
+
+## literal "NA", test using is.na()
+lung_coldata[lung_coldata =="NA"]<- NA
+
+table(lung_coldata$subtype_Smoking.Status, useNA = "ifany")
+
+
+gender.cols.assigned<- setNames(gender.cols, unique(as.character(lung_coldata$gender)))
+name.cols.assigned<- setNames(name.cols, unique(as.character(lung_coldata$name)))
+definition.cols.assigned<- setNames(definition.cols, unique(as.character(lung_coldata$definition)))
+smoking.cols.assigned<- setNames(smoking.cols, na.omit(unique(as.character(lung_coldata$subtype_Smoking.Status))))
+
+
+
+## Heatmap annotation
+library(ComplexHeatmap)
+lung_ha<- HeatmapAnnotation(df = as.data.frame(lung_coldata) %>% dplyr::select(-sample), 
+                       col = list(gender = gender.cols.assigned,
+                                  name = name.cols.assigned,
+                                  definition = definition.cols.assigned,
+                                  subtype_Smoking.Status= smoking.cols.assigned))
+
+variations.3PC<- apply(abs(V[,1:3]), 1, max)
+
+## order according to the loadings and choose the top 500 genes
+genes.3PC<- order(-variations.3PC)[1:500]
+
+Heatmap(Y[genes.3PC,], name = "log2 RNAseq\nscaled counts", 
+        show_row_names = FALSE, show_column_names = FALSE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE, 
+        clustering_distance_rows = "pearson",
+        clustering_distance_columns = "pearson",
+        clustering_method_rows = "complete",
+        clustering_method_columns = "complete",
+        top_annotation = lung_ha, 
+        use_raster = )
+
+### clustering first
+
+##### do hclust
+make_hc<- function(x, distance_measure, linkage_method){
+        if (distance_measure == "pearson"){
+                ## cor calculate for columns, needs to transpose x first
+                distance <- as.dist(1-cor(t(x), method = "pearson"))
+                hc<- hclust(distance, method = linkage_method)
+
+        } else {
+        ## dist calculates for rows
+        distance<- dist(x, method = distance_measure)
+        hc<- hclust(distance, method = linkage_method)
+
+        }
+        return (hc)
+
+}
+
+## row is regions(genes)
+hc_row<- make_hc(Y[genes.3PC,], "pearson", "complete") 
+row_dend<- as.dendrogram(hc_row)
+
+## column is sample
+
+hc_col<- make_hc(t(Y[genes.3PC,]), "pearson", "complete")
+col_dend<- as.dendrogram(hc_col)
+
+
+library(dendextend)
+
+row_dend<- color_branches(row_dend, k = 4)
+col_dend<- color_branches(col_dend, k = 5)
+
+hp<- Heatmap(Y[genes.3PC,], show_row_names = FALSE, show_column_names = FALSE,
+        name="log2 RNAseq\nscaled counts", 
+        row_dend_reorder = T, column_dend_reorder = T, 
+        cluster_rows = row_dend,
+        cluster_columns = col_dend,
+        top_annotation = lung_ha,
+        split = 4,
+        use_raster = TRUE,
+        raster_quality = 3)
+
+hp
+
+
+set.seed(100)
+order_list<- row_order(hp)
+lapply(order_list, function(x) length(x))
+
+extract_genes<- function(hp, mat){
+        order_list<- row_order(hp)
+        cluster1<- mat[order_list[[1]],]
+        cluster2<- mat[order_list[[2]],]
+        cluster3<- mat[order_list[[3]],]
+        cluster4<- mat[order_list[[4]],]
+        return (list(cluster1, cluster2, cluster3, cluster4))
+
+}
+
+all.genes<- extract_genes(hp, Y[genes.3PC,])
+
+map(map(all.genes, rownames), bitr, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb="org.Hs.eg.db", drop = FALSE) %>% .[[4]] %>% .$SYMBOL 
+        
+
+```
+
+### Differential analysis
+
+to compare adnocarcinoma and squomous, remove the normals first.
+
+```{r}
+
+colData(LUAD_rna_data) %>% as_tibble() %>% .$definition %>% table()
+colData(LUSC_rna_data) %>% as_tibble() %>% .$name %>% table()
+colData(LUAD_rna_data) %>% as_tibble() %>% .$definition %>% table()
+colData(LUSC_rna_data) %>% as_tibble() %>% .$subtype_Smoking.Status %>% table()
+colData(LUSC_rna_data) %>% as_tibble() %>% .$gender %>% table()
+
+LUAD_noNormal<- LUAD_rna_data[, LUAD_coldata$definition != "Solid Tissue Normal"]
+LUSC_noNormal<- LUSC_rna_data[, LUSC_coldata$definition != "Solid Tissue Normal"]
+
+LUAD_noNormal_count<- assay(LUAD_noNormal)
+## column name the same order with meta data
+all.equal(colnames(LUAD_noNormal_count), colData(LUAD_noNormal)$barcode)
+
+LUAD_noNormal_coldata<- colData(LUAD_noNormal)[, c("sample", "gender", "name", "definition", "subtype_Smoking.Status")]
+
+LUSC_noNormal_count<- assay(LUSC_noNormal)
+
+LUSC_noNormal_coldata<- colData(LUSC_noNormal)[, c("sample", "gender", "name", "definition", "subtype_Smoking.Status")]
+
+all.equal(colnames(LUSC_noNormal_count), colData(LUSC_noNormal)$barcode)
+
+lung_cancer_counts<- cbind(LUAD_noNormal_count, LUSC_noNormal_count)
+lung_coldata<- rbind(LUAD_noNormal_coldata, LUSC_noNormal_coldata)
+
+all.equal(colnames(lung_cancer_counts), rownames(lung_coldata))
+
+```
+
+```{r}
+library("DESeq2")
+dds_lung_cancer <- DESeqDataSetFromMatrix(countData = lung_cancer_counts,
+                              colData = lung_coldata,
+                              design = ~ name)
+dds_lung_cancer
+dds_lung_cancer <- DESeq(dds_lung_cancer)
+res_lung_cancer <- results(dds_lung_cancer, contrast = c("name", "small cell lung carcinoma", "lung adenocarcinoma"))
+
+```
+
+Too many samples, DESeq2 is taking forever, use limma-voom
+```{r}
+library(limma)
+library(edgeR)
+
+
+## convert o DGElist object
+## prefilter 1% of samples have counts >10
+x<- lung_cancer_counts[rowSums(lung_cancer_counts >= 10) >= 104 , ]
+x <- DGEList(counts = x)
+x <- calcNormFactors(x, method = "TMM")
+x$samples$norm.factors
+
+geneid <- rownames(x)
+genes <- select( org.Hs.eg.db , keys=geneid, columns=c("SYMBOL"), 
+                keytype="ENSEMBL")
+head(genes)
+
+## remove duplicated genes.
+
+design<- model.matrix(~0 + factor(c(rep(1,535), rep(2, 502))))
+colnames(design)<- c("LUAD", "LUSC")
+
+contr.matrix <- makeContrasts(
+   LUADvsLUSC = LUAD - LUSC, 
+   levels = colnames(design))
+
+par(mfrow=c(1,2))
+v <- voom(x, design, plot=TRUE)
+v
+
+vfit <- lmFit(v, design)
+vfit <- contrasts.fit(vfit, contrasts=contr.matrix)
+efit <- eBayes(vfit)
+plotSA(efit, main="Final model: Mean−variance trend")
+
+head(efit$coefficients)
+
+LUAD_vs_LUSC_res<- topTable(efit, coef=1,number=Inf, sort.by="P")
+LUAD_vs_LUSC_res$ENSEMBL<- rownames(LUAD_vs_LUSC_res)
+
+class(LUAD_vs_LUSC_res)
+
+gene_id_map<- bitr(LUAD_vs_LUSC_res$ENSEMBL, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb="org.Hs.eg.db")
+
+library(dplyr)
+LUAD_vs_LUSC_res<- left_join(LUAD_vs_LUSC_res, gene_id_map) %>% 
+        filter(!is.na(SYMBOL)) %>%
+        distinct(SYMBOL,.keep_all = T)
+```
+
+Pre-rank for GSEA
+`signed * -log10Pvalue`
+
+```{r}
+LUAD_vs_LUSC_res$fcSign<- sign(LUAD_vs_LUSC_res$logFC)
+LUAD_vs_LUSC_res$logP<- -log10(LUAD_vs_LUSC_res$P.Value)
+LUAD_vs_LUSC_res$metric=LUAD_vs_LUSC_res$logP/LUAD_vs_LUSC_res$fcSign
+y<-LUAD_vs_LUSC_res[,c("SYMBOL", "metric")]
+write.table(y,file="expression.rnk",quote=F,sep="\t",row.names=F)
+```
+

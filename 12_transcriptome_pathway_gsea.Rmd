@@ -1,0 +1,599 @@
+---
+title: "2018-02-07_GSEA_analysis"
+author: "Ming Tang"
+date: "February 7, 2018"
+output: html_document
+---
+
+```{r}
+#source("https://bioconductor.org/biocLite.R")
+#biocLite("fgsea")
+
+library(fgsea)
+CCLE_rnks<- list.files(".", pattern = "CCLE_.*rnk")
+names(CCLE_rnks)<- gsub("_pre_rank.rnk", "", CCLE_rnks)
+
+get_ranks<- function(rnk){
+        ranks<- read_tsv(rnk, col_names =T)
+        ranks<- setNames(ranks$metric, ranks$Name)
+        ranks
+}
+
+ranks<- map(CCLE_rnks, get_ranks)
+
+
+hallmark<- gmtPathways("data/msigdb/h.all.v6.1.symbols.gmt")
+reactome<- gmtPathways("data/msigdb/c2.cp.reactome.v6.1.symbols.gmt")
+kegg<- gmtPathways("data/msigdb/c2.cp.kegg.v6.1.symbols.gmt")
+c2_all_curated<- gmtPathways("data/msigdb/c2.all.v6.1.symbols.gmt")
+c2_canonical<- gmtPathways("data/msigdb/c2.cp.v6.1.symbols.gmt")
+fgseaRes <- map(ranks, fgsea, pathways = hallmark, minSize=15, maxSize=500, nperm=2000)
+
+## only extract top up- and down-pathways
+
+get_top<- function(x, n){
+        topPathwaysUp <- x %>% filter(padj <= 0.05 & ES > 0) 
+        topPathwaysDown <- x %>% filter(padj <= 0.05 & ES < 0)
+        topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+        topPathways
+}
+
+fgseaRes$CCLE_large_vs_adeno %>% filter(padj <= 0.05) %>% View()
+
+fgseaRes$CCLE_large_vs_adeno %>% arrange(padj) %>% View("CCLE")
+fgseaRes$CCLE_small_vs_adeno %>% arrange(padj) %>% View("CCLE_small_vs_adeno")
+
+
+## A function to turn list column to vector
+
+list_column_2_vec<- function(df){
+        df[sapply(df, is.list)] <- apply(df[sapply(df, is.list)], 
+                                             1, function(x) 
+                                                 paste(unlist(x), 
+                                                       sep=", ", collapse=", "))
+        return(df)
+}
+        
+        
+
+
+
+
+######################################## large vs adeno
+
+Pa26_common<- left_join(fgseaRes$CCLE_large_vs_adeno, mixing_fgseaRes$Pa26_large_vs_adeno, by = c("pathway" = "pathway")) %>% filter(sign(ES.x) == sign(ES.y)) 
+
+Pa26_common<- list_column_2_vec(Pa26_common)
+write_tsv(Pa26_common %>% filter(padj.x <= 0.05 & padj.y <= 0.05), "CCLE_Pa26_large_vs_adeno_common_pathway.tsv")
+
+Pa30_common<- left_join(fgseaRes$CCLE_large_vs_adeno, mixing_fgseaRes$Pa30_large_vs_adeno, by = c("pathway" = "pathway")) %>% filter(sign(ES.x) == sign(ES.y))
+
+Pa30_common<- list_column_2_vec(Pa30_common)
+write_tsv(Pa30_common %>% filter(padj.x <= 0.05 & padj.y <= 0.05), "CCLE_Pa30_large_vs_adeno_common_pathway.tsv")
+
+Pa34_common<- left_join(fgseaRes$CCLE_large_vs_adeno, mixing_fgseaRes$Pa34_large_vs_adeno, by = c("pathway" = "pathway")) %>% filter(sign(ES.x) == sign(ES.y))
+Pa34_common<- list_column_2_vec(Pa34_common)
+write_tsv(Pa34_common %>% filter(padj.x <= 0.05 & padj.y <= 0.05), "CCLE_Pa34_large_vs_adeno_common_pathway.tsv")
+
+
+
+Pa37_common<- left_join(fgseaRes$CCLE_large_vs_adeno, mixing_fgseaRes$Pa37_large_vs_adeno, by = c("pathway" = "pathway")) %>% filter(sign(ES.x) == sign(ES.y)) 
+Pa37_common<- list_column_2_vec(Pa37_common)
+write_tsv(Pa37_common %>% filter(padj.x <= 0.05 & padj.y <= 0.05), "CCLE_Pa37_large_vs_adeno_common_pathway.tsv")
+
+########################################  large  vs squamous
+
+Pa29_common<- left_join(fgseaRes$CCLE_large_vs_squamous, mixing_fgseaRes$Pa29_large_vs_squamous, by = c("pathway" = "pathway")) %>% filter(sign(ES.x) == sign(ES.y)) 
+
+Pa29_common<- list_column_2_vec(Pa29_common)
+
+# write only the significant ones to file.
+write_tsv(Pa29_common %>% filter(padj.x <= 0.05 & padj.y <= 0.05), "CCLE_Pa29_large_vs_squamous_common_pathway.tsv")
+
+View(Pa29_common)
+
+
+Pa33_common<- left_join(fgseaRes$CCLE_large_vs_squamous, mixing_fgseaRes$Pa33_large_vs_squmous, by = c("pathway" = "pathway")) %>% filter(sign(ES.x) == sign(ES.y)) 
+
+Pa33_common<- list_column_2_vec(Pa33_common)
+
+View(Pa33_common)
+
+write_tsv(Pa33_common %>% filter(padj.x <= 0.05 & padj.y <= 0.05) , "CCLE_Pa33_large_vs_squamous_common_pathway.tsv")
+######################################## Small vs adeno
+
+Pa31_common<- left_join(fgseaRes$CCLE_small_vs_adeno, mixing_fgseaRes$Pa31_small_vs_adeno, by = c("pathway" = "pathway")) %>% filter(sign(ES.x) == sign(ES.y)) 
+
+Pa31_common<- list_column_2_vec(Pa31_common)
+
+write_tsv(Pa31_common %>% filter(padj.x <= 0.05 & padj.y <= 0.05)  , "CCLE_Pa31_small_vs_adeno_common_pathway.tsv")
+
+library(forcats)
+
+
+
+Pa35_common<- left_join(fgseaRes$CCLE_small_vs_adeno, mixing_fgseaRes$Pa35_small_vs_adeno, by = c("pathway" = "pathway")) %>% filter(sign(ES.x) == sign(ES.y)) 
+
+Pa35_common<- list_column_2_vec(Pa35_common)
+write_tsv(Pa35_common %>% filter(padj.x <= 0.05 & padj.y <= 0.05)  , "CCLE_Pa35_small_vs_adeno_common_pathway.tsv")
+
+
+####################################### small vs  sqmamous 
+
+Pa36_common<- left_join(fgseaRes$CCLE_small_vs_squamous, mixing_fgseaRes$Pa36_small_vs_squamous, by = c("pathway" = "pathway")) %>% filter(sign(ES.x) == sign(ES.y)) 
+
+Pa36_common<- list_column_2_vec(Pa36_common)
+
+View(Pa36_common)
+
+write_tsv(Pa36_common %>% filter(padj.x <= 0.05 & padj.y <= 0.05) , "CCLE_Pa36_small_vs_squamous_common_pathway.tsv")
+```
+
+### make bar graph for enriched pathways
+
+```{r}
+library(ggpubr)
+
+draw_pathway_bar<- function(df){
+        df <- df %>% mutate(padj = sign(ES.y) *-log10(padj.y), direction = ifelse(ES.y >0, "up", "down")) %>% mutate(pathway = gsub("HALLMARK_", "", pathway))
+        p<- ggbarplot(df, x = "pathway", y = "padj",
+          fill = "direction",           # change fill color by mpg_level
+          color = "white",            # Set bar border colors to white
+          palette = "jco",            # jco journal color palett. see ?ggpar
+          sort.val = "asc",           # Sort the value in ascending order
+          sort.by.groups = FALSE,     # Don't sort inside each group
+          x.text.angle = 90,          # Rotate vertically x axis texts
+          ylab = "sign(ES) * -log10padj",
+          xlab = NULL,
+          legend.title = "pathway",
+          rotate = TRUE
+          )
+        p<- p + geom_hline(yintercept = c(-1.3, 1.3), color = "red", linetype = 2)
+        p
+}
+
+
+
+#### large vs adeno
+draw_pathway_bar(Pa26_common) + ggtitle("Pa26 large vs adeno")
+draw_pathway_bar(Pa30_common) + ggtitle("Pa30 large vs adeno")
+draw_pathway_bar(Pa34_common) + ggtitle("Pa34 large vs adeno")
+draw_pathway_bar(Pa37_common) + ggtitle("Pa37 large vs adeno")
+
+
+###  large vs squamous
+draw_pathway_bar(Pa29_common) + ggtitle("Pa29 large vs squamous")
+draw_pathway_bar(Pa33_common) + ggtitle("Pa33 large vs squamous")
+
+### small vs adeno
+draw_pathway_bar(Pa31_common) + ggtitle("Pa31 small cell vs adeno")
+draw_pathway_bar(Pa35_common) + ggtitle("Pa35 small cell vs adeno")
+
+
+###  small vs sqamous
+draw_pathway_bar(Pa36_common) + ggtitle("Pa36 small cell vs squamous")
+
+
+
+```
+### visualization
+
+```{r}
+topPathwaysUp <- fgseaRes[ES > 0][head(order(pval), n=10), pathway]
+topPathwaysDown <- fgseaRes[ES < 0][head(order(pval), n=10), pathway]
+topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+plotGseaTable(hallmark_mouse_gmt[topPathways], ranks, fgseaRes, 
+              gseaParam = 0.5)
+
+plotEnrichment(hallmark[["HALLMARK_E2F_TARGETS"]],
+               mixing_ranks$Pa34_large_vs_adeno) + labs(title="HALLMARK_E2F_TARGETS") +
+        theme_bw(base_size = 14)
+
+```
+
+### TCGA ranks
+
+```{r}
+TCGA_rnk<- read_tsv("TCGA_LUSC_vs_LUAD_expression.rnk", col_names = T)
+
+TCGA_rank<- setNames(TCGA_rnk$metric, TCGA_rnk$Name)
+
+TCGA_fgsea<- fgsea(TCGA_rank, pathways = hallmark, minSize=15, maxSize=500, nperm=2000)
+
+TCGA_fgsea %>% arrange(padj) %>% View("TCGA")
+
+
+CCLE_TCGA_squamous_vs_adeno_common<- left_join(fgseaRes$CCLE_squamous_vs_adeno, TCGA_fgsea, by = c("pathway" = "pathway")) %>% filter(sign(ES.x) == sign(ES.y)) 
+
+CCLE_TCGA_squamous_vs_adeno_common[sapply(CCLE_TCGA_squamous_vs_adeno_common, is.list)] <- apply(CCLE_TCGA_squamous_vs_adeno_common[sapply(CCLE_TCGA_squamous_vs_adeno_common, is.list)], 
+                                             1, function(x) 
+                                                 paste(unlist(x), 
+                                                       sep=", ", collapse=", "))
+
+write_tsv(CCLE_TCGA_squamous_vs_adeno_common  %>% filter(padj.x <= 0.05 & padj.y <= 0.05), "CCLE_TCGA_squamous_vs_adeno_common_pathway.tsv")
+
+
+draw_pathway_bar_both2<- function(df){
+        df <- df  %>%
+                mutate(padj.y = sign(ES.y) *-log10(padj.y), direction = ifelse(ES.y >0, "up", "down")) %>% 
+                mutate(pathway = gsub("HALLMARK_", "", pathway)) %>%
+                mutate(padj.x = sign(ES.x) *-log10(padj.x)) %>%
+        dplyr::select(pathway, padj.x, padj.y, direction) %>% tidyr::gather("sample", "padj", 2:3) %>%
+        mutate(sample = ifelse(sample == "padj.x", "CCLE", "TCGA"))
+        
+        ## reorder the bar only based on the CCLE padj
+        df_cc<- filter(df, sample == "CCLE") %>% 
+        mutate(pathway = reorder(pathway, padj)) %>% 
+        arrange(pathway)
+        
+        df<- mutate(df, pathway = factor(pathway, levels = levels(df_cc$pathway)))
+        
+        ## draw 
+        ggplot(df, aes(x = pathway, y = padj)) + 
+        geom_bar(aes(fill = direction), stat = "identity") +
+        coord_flip() +
+        geom_hline(yintercept = c(-1.3, 1.3), color = "red", linetype = 2) +
+        facet_wrap(~sample) +
+        theme_bw(base_size = 14) +
+        ylab("sign(ES) * -log10padj") +
+        xlab(NULL)
+        
+}
+draw_pathway_bar_both2(CCLE_TCGA_squamous_vs_adeno_common) + ggtitle("CCLE TCGA squamous vs adeno")
+ggsave("results/GSEA/TCGA_squamous_vs_adeno_CCLE_pathway.pdf")
+```
+
+
+### Use the genes in the leading edge for CCLE RNAseq clustering or PCA!! better clustering?
+
+```{r}
+mixing_pathways<- tibble::data_frame(
+        patient = c("Pa26", "Pa30", "Pa34", "Pa37", "Pa29", "Pa33", "Pa31", "Pa35", "Pa36"),
+        comparison = c(rep("large vs adeno", 4), rep("squamous vs large", 2), rep("small vs adeno", 2), "squamous vs small"), 
+        data = list(Pa26_common, Pa30_common, Pa34_common, Pa37_common, Pa29_common, Pa33_common, Pa31_common, Pa35_common, Pa36_common))
+
+save(Pa26_common, Pa30_common, Pa34_common, Pa37_common, Pa29_common, Pa33_common, Pa31_common, Pa35_common, Pa36_common, mixing_pathways, file = "~/projects/mixing_histology_lung_cancer/data/mixing_histology_pathway_GSEA_CCLE.rda")
+
+library(stringr)
+leading_genes<- mixing_pathways %>% 
+        mutate(data_filter = map(data, function(x) x %>% filter(padj.x <= 0.05 & padj.y <= 0.05))) %>%
+        mutate(leading_genes = map(data_filter, function(x) x$leadingEdge.y)) %>% 
+        select(leading_genes) %>% 
+        unnest() %>%
+        str_split(",")
+
+leading_genes<- leading_genes[[1]] %>% str_trim() %>% unique() %>% str_replace_all("\"", "") %>%
+        str_replace_all("c\\(", "") %>% str_replace_all("\\)", "") 
+
+library(clusterProfiler)
+gene_map_list<- bitr(rownames(X), fromType = "ENSEMBL", toType = "SYMBOL", OrgDb="org.Hs.eg.db", drop = TRUE)
+
+leading_genes_map<- left_join(data_frame(SYMBOL = leading_genes), gene_map_list)
+
+idx_leading<- rownames(X) %in% leading_genes_map$ENSEMBL
+
+library(ComplexHeatmap)
+
+col_fun_mixing<- circlize::colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+
+Heatmap(X[idx_leading,], name = "log2 RNAseq\nscaled counts", 
+        col = col_fun_mixing,
+        show_row_names = FALSE, show_column_names = FALSE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE, 
+        clustering_distance_rows = "pearson",
+        clustering_distance_columns = "pearson",
+        clustering_method_rows = "ward.D2",
+        clustering_method_columns = "ward.D2",
+        top_annotation = CCLE.ha)
+```
+
+### put CCLE and patient data together
+
+```{r}
+## put patient data and CCLE data side by side
+library("cowplot") # align axis
+
+
+draw_pathway_bar_both<- function(df){
+        df <- df  %>%
+                mutate(padj.y = sign(ES.y) *-log10(padj.y), direction = ifelse(ES.y >0, "up", "down")) %>% 
+                mutate(pathway = gsub("HALLMARK_", "", pathway)) %>%
+                mutate(padj.x = sign(ES.x) *-log10(padj.x)) %>%
+        dplyr::select(pathway, padj.x, padj.y, direction) %>% tidyr::gather("sample", "padj", 2:3) %>%
+        mutate(sample = ifelse(sample == "padj.x", "CCLE", "patient"))
+        
+        ## reorder the bar only based on the CCLE padj
+        df_cc<- filter(df, sample == "CCLE") %>% 
+        mutate(pathway = reorder(pathway, padj)) %>% 
+        arrange(pathway)
+        
+        df<- mutate(df, pathway = factor(pathway, levels = levels(df_cc$pathway)))
+        
+        ## draw 
+        ggplot(df, aes(x = pathway, y = padj)) + 
+        geom_bar(aes(fill = direction), stat = "identity") +
+        coord_flip() +
+        geom_hline(yintercept = c(-1.3, 1.3), color = "red", linetype = 2) +
+        facet_wrap(~sample) +
+        theme_bw(base_size = 14) +
+        ylab("sign(ES) * -log10padj") +
+        xlab(NULL)
+        
+}
+
+#### large vs adeno
+draw_pathway_bar_both(Pa26_common) + ggtitle("Pa26 large vs adeno") 
+ggsave("results/GSEA/Pa26_large_vs_adeno_CCLE_pathway.pdf")
+draw_pathway_bar_both(Pa30_common) + ggtitle("Pa30 large vs adeno")
+ggsave("results/GSEA/Pa30_large_vs_adeno_CCLE_pathway.pdf")
+draw_pathway_bar_both(Pa34_common) + ggtitle("Pa34 large vs adeno")
+ggsave("results/GSEA/Pa34_large_vs_adeno_CCLE_pathway.pdf")
+draw_pathway_bar_both(Pa37_common) + ggtitle("Pa37 large vs adeno")
+ggsave("results/GSEA/Pa37_large_vs_adeno_CCLE_pathway.pdf")
+
+
+### large  vs squamous
+draw_pathway_bar_both(Pa29_common) + ggtitle("Pa29 large vs squamous")
+ggsave("results/GSEA/Pa29_large_vs_squamous_CCLE_pathway.pdf")
+draw_pathway_bar_both(Pa33_common) + ggtitle("Pa33 large vs squamous")
+ggsave("results/GSEA/Pa33_large_vs_squamous_CCLE_pathway.pdf")
+
+### small vs adeno
+draw_pathway_bar_both(Pa31_common) + ggtitle("Pa31 small cell vs adeno")
+ggsave("results/GSEA/Pa31_small_vs_adeno_CCLE_pathway.pdf")
+draw_pathway_bar_both(Pa35_common) + ggtitle("Pa35 small cell vs adeno")
+ggsave("results/GSEA/Pa35_small_vs_adeno_CCLE_pathway.pdf")
+
+###  small vs squamous
+draw_pathway_bar_both(Pa36_common) + ggtitle("Pa36 small cell vs squamous")
+ggsave("results/GSEA/Pa36_small_vs_squamous_CCLE_pathway.pdf")
+
+
+```
+
+#### Heatmap to put comparisons together
+
+```{r}
+#### large vs adeno
+
+mixing_large_vs_adeno<- purrr::reduce(mixing_fgseaRes[c("Pa26_large_vs_adeno","Pa30_large_vs_adeno", "Pa34_large_vs_adeno", "Pa37_large_vs_adeno")], inner_join, by = "pathway") %>% 
+        mutate(Pa26 = sign(ES.x) * -log10(pval.x),
+               Pa30 = sign(ES.y) * -log10(pval.y),
+               Pa34 = sign(ES.x.x) * -log10(pval.x.x),
+               Pa37 = sign(ES.y.y) * -log10(pval.y.y)) %>%
+        dplyr::select(pathway, Pa26, Pa30, Pa34, Pa37) %>%
+        inner_join(fgseaRes$CCLE_large_vs_adeno, by = "pathway") %>%
+        mutate(CCLE = sign(ES) * -log10(pval)) %>%
+        dplyr::select(pathway, CCLE, Pa26, Pa30, Pa34, Pa37)
+
+mixing_large_vs_adeno_mat<- as.matrix(mixing_large_vs_adeno[, -1])
+rownames(mixing_large_vs_adeno_mat)<- mixing_large_vs_adeno$pathway %>% str_replace_all("HALLMARK_", "")
+
+library(ComplexHeatmap)
+Heatmap(mixing_large_vs_adeno_mat)
+```
+
+
+### put all 5 data sets together: 
+
+CCLE, TCGA, Myerson dataset, GSE94601, and our own mixing histology 
+
+```{r}
+# CCLE
+fgseaRes
+
+
+
+# TCGA (only squamous vs adeno)
+TCGA_fgsea
+fgseaRes$TCGA_squamous_vs_adeno<- TCGA_fgsea
+
+TCGA_CCLE_gsea_tidy<- bind_rows(fgseaRes, .id = "comparison") %>% 
+        separate(comparison, c("dataset", "comparison"), extra = "merge") 
+
+# Myerson
+myerson_fgseaRes
+myerson_gsea_tidy<- bind_rows(myerson_fgseaRes, .id = "comparison") %>% 
+        separate(comparison, c("dataset", "comparison")) %>% 
+        mutate(comparison = case_when(
+                comparison == "SMALLvsADENO" ~ "small_vs_adeno",
+                comparison == "SMALLvsSQUAMOUS" ~ "small_vs_squamous",
+                comparison == "SQUAMOUSvsADENO" ~ "squamous_vs_adeno"
+        )) 
+
+# GSE94601
+GSE94601_fgseaRes
+GSE94601_gsea_tidy<- bind_rows(GSE94601_fgseaRes, .id = "comparison") %>% 
+        separate(comparison, c("dataset", "comparison")) %>% 
+        mutate(comparison = case_when(
+                comparison == "LCCvsAC" ~ "large_vs_adeno",
+                comparison == "LCCvsSqCC" ~ "large_vs_squamous",
+                comparison == "SCLCvsAC" ~ "small_vs_adeno",
+                comparison == "SCLCvsSqCC" ~ "small_vs_squamous",
+                comparison == "SqCCvsAC" ~ "squamous_vs_adeno"
+        )) 
+
+# mixing histology
+mixing_fgseaRes
+mixing_gsea_tidy<- bind_rows(mixing_fgseaRes, .id = "comparison") %>% 
+        separate(comparison, c("dataset", "comparison"), extra = "merge") 
+```
+
+### merge all data sets into one dataframe
+
+```{r}
+gsea_tidy<- bind_rows(mixing_gsea_tidy, GSE94601_gsea_tidy, myerson_gsea_tidy, TCGA_CCLE_gsea_tidy)
+
+gsea_tidy<- list_column_2_vec(as.data.frame(gsea_tidy))
+
+View(gsea_tidy)
+
+write_tsv(gsea_tidy, "results/GSEA/all_data_combined_gsea_results.tsv")
+
+gsea_tidy<- read_tsv(here("results/GSEA/all_data_combined_gsea_results.tsv"))
+gsea_list<- gsea_tidy %>% 
+        mutate(comparison = case_when(
+                comparison == "large_vs_squmous" ~ "large_vs_squamous",
+                TRUE ~ comparison
+        )) %>%
+        group_by(comparison) %>%
+        nest()
+
+gsea_list$data[[1]] %>% 
+        mutate(direction = ifelse(ES > 0 , "up" , "down")) %>%
+        mutate(significant = padj <= 0.05) %>%
+        group_by(pathway) %>% 
+        filter(sum(significant) >= 4) %>%
+        mutate(common_direction = case_when(
+                sum(direction == "up") >= 4 ~ "up",
+                sum(direction == "up") <= 2 ~ "down",
+                TRUE ~ "unsure"
+        )) %>%
+        filter(sum(direction == "up") >= 4 | sum(direction == "up") <= 2) %>% 
+        mutate(ES.sig = sign(ES) * -log10(padj)) %>%
+        mutate(ES.sig = case_when(
+                direction != common_direction ~ 0,
+                TRUE ~ ES.sig
+        )) %>% 
+        mutate(ES.sig = case_when(
+                ES.sig == 0 ~ 0, 
+                ES.sig >= -log10(0.05) ~ 1,
+                ES.sig < log10(0.05) ~ -1,
+                TRUE ~ 0
+        )) %>% 
+        dplyr::select(dataset, pathway, ES.sig) %>%
+        spread(dataset, ES.sig) %>%
+        View()
+
+
+
+spread_by_dataset<- function(x, n){
+        total_n<- x %>% .$dataset %>% unique() %>% length()
+        df<- x %>% 
+        mutate(direction = ifelse(ES > 0 , "up" , "down")) %>%
+        mutate(significant = padj <= 0.05) %>%
+        group_by(pathway) %>% 
+        filter(sum(significant) >= n) %>%
+        mutate(common_direction = case_when(
+                sum(direction == "up") >= n ~ "up",
+                sum(direction == "up") <= total_n - n ~ "down",
+                TRUE ~ "unsure"
+        )) %>%
+        filter(sum(direction == "up") >= n | sum(direction == "up") <= total_n -n ) %>% 
+        mutate(ES.sig = sign(ES) * -log10(padj)) %>%
+        mutate(ES.sig = case_when(
+                direction != common_direction ~ 0,
+                TRUE ~ ES.sig
+        )) %>% 
+        mutate(ES.sig = case_when(
+                ES.sig == 0 ~ 0, 
+                ES.sig >= -log10(0.05) ~ 1,
+                ES.sig < log10(0.05) ~ -1,
+                TRUE ~ 0
+        )) %>% 
+        dplyr::select(dataset, pathway, ES.sig) %>%
+        spread(dataset, ES.sig) 
+        
+        df
+}
+        
+
+## large vs adeno        
+large_vs_adeno_df<- spread_by_dataset(gsea_list$data[[1]], 4)  
+
+## large vs squamous
+large_vs_squamous_df<- spread_by_dataset(gsea_list$data[[2]], 3) 
+
+## small vs adeno
+small_vs_adeno_df<- spread_by_dataset(gsea_list$data[[3]], 3) 
+
+## small vs squamous
+small_vs_squamous_df<- spread_by_dataset(gsea_list$data[[4]], 3) 
+
+## squamous vs adeno
+squamous_vs_adeno_df<- spread_by_dataset(gsea_list$data[[5]], 3)  
+
+
+## large vs small
+spread_by_dataset(gsea_list$data[[6]], 1)  %>% View()
+        
+
+###
+
+df_to_mat_add_rowname<- function(df){
+        mat<- df[, -1]
+        mat<- as.matrix(mat)
+        rownames(mat)<- df$pathway %>% str_replace_all("HALLMARK_", "")
+        mat
+
+}
+
+library(ComplexHeatmap)
+cell_fun2 = function(j, i, x, y, width, height, fill) {
+	grid.rect(x = x, y = y, width = width * 0.95, height = height*0.95, 
+		gp = gpar(col = "grey", fill = fill, lty = 1, lwd = 0.5))
+}
+
+col_fun1<- circlize::colorRamp2(c(-1, 0, 1), c("blue","grey", "red"))
+
+pdf("results/GSEA/large_vs_adeno.pdf", 6, 6)
+Heatmap(df_to_mat_add_rowname(large_vs_adeno_df), 
+        rect_gp = gpar(type = "none"),
+        cell_fun = cell_fun2,
+        col = col_fun1,
+        show_row_dend = F, 
+        show_column_dend = T,
+        show_heatmap_legend = F,
+        row_names_gp = gpar(fontsize = 8),
+        column_title = "LCNEC vs LUAD")
+dev.off()
+
+pdf("results/GSEA/large_vs_squamous.pdf", 6, 6)
+Heatmap(df_to_mat_add_rowname(large_vs_squamous_df), 
+        rect_gp = gpar(type = "none"),
+        col = col_fun1,
+        cell_fun = cell_fun2,
+        show_row_dend = F, 
+        show_column_dend = F,
+        show_heatmap_legend = F,
+        column_title = "large vs squamous")
+dev.off()
+
+pdf("results/GSEA/small_vs_adeno.pdf", 8, 6)
+
+Heatmap(df_to_mat_add_rowname(small_vs_adeno_df), 
+        rect_gp = gpar(type = "none"),
+        col = col_fun1,
+        cell_fun = cell_fun2,
+        show_row_dend = F, 
+        show_column_dend = T,
+        show_heatmap_legend = F,
+        row_names_gp = gpar(fontsize = 8), 
+        column_title = "SCC vs LUAD")
+dev.off()
+
+pdf("results/GSEA/small_vs_squamous.pdf", 6, 6)
+Heatmap(df_to_mat_add_rowname(small_vs_squamous_df), 
+        rect_gp = gpar(type = "none"),
+        col = col_fun1,
+        cell_fun = cell_fun2,
+        show_row_dend = F, 
+        show_column_dend = F,
+        show_heatmap_legend = F,
+        column_title = "small vs squamous",
+        row_names_side = "left")
+dev.off()
+
+
+pdf("results/GSEA/squamous_vs_adeno.pdf", 6, 6)
+Heatmap(df_to_mat_add_rowname(squamous_vs_adeno_df), 
+        rect_gp = gpar(type = "none"),
+        col = col_fun1,
+        cell_fun = cell_fun2,
+        show_row_dend = F, 
+        show_column_dend = F,
+        show_heatmap_legend = F,
+        column_title = "squamous vs adeno")
+dev.off()
+
+```

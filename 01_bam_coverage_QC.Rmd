@@ -1,0 +1,70 @@
+---
+title: "01_bam_coverage_QC"
+author: "Ming Tang"
+date: "November 28, 2017"
+output: github_document
+---
+
+```{bash}
+cd /rsrch2/genomic_med/krai/mixing_histology_snakemake/03indel_rln_recal_bam_coverage
+
+awk 'FNR==1 && NR!=1{next;}{print $0"\t"FILENAME}' *sample_summary | cut -f2,3,5,12 | grep -v "N/A" > bam_coverage_summary.txt
+
+## local computer
+cd /data
+rsync -avhP railab:mixing_histology_snakemake/03indel_rln_recal_bam_coverage/bam_coverage_summary.txt .
+```
+
+```{r}
+library(stringr)
+library(tidyverse)
+library(here)
+
+coverage_summary<- read_tsv(here("data/bam_coverage_summary.txt"), col_names = T)
+
+names(coverage_summary)<-  names(coverage_summary) %>% str_replace("Pa25_N.sample_summary", "sample") 
+
+coverage_summary %>% mutate(sample = str_replace(sample, ".sample_summary", "")) %>% write_tsv(here("results/WES_coverage_summary.tsv"))
+
+pdf(here("results/WES_median_coverage.pdf"), 8, 8)
+coverage_summary %>% mutate(sample = str_replace(sample, ".sample_summary", "")) %>%
+        dplyr::rename(median = granular_median) %>%
+        ggplot(aes(x = sample, y = median)) + geom_bar(stat = "identity") +
+        theme_bw(base_size = 15) +
+        theme(axis.text.x=element_text(angle= 45,hjust=1)) +
+        geom_hline(yintercept = 50, linetype = 2, color = "red") +
+        geom_text(aes(label=median), position=position_dodge(width=0.9), vjust=-0.25)
+dev.off()
+
+
+mix_qc<- read.table("data/53.E1.bams.cov_summary.txt", header =T, sep="\t", stringsAsFactors = F)
+
+View(mix_qc)
+
+mix_qc<- mix_qc[1:46,]
+
+str(mix_qc)
+mix_qc$MRN.PatientId<- as.factor(mix_qc$MRN.PatientId)
+
+mix_qc<- mix_qc[,c(2,3,4,5,6,7,8,9)]
+
+mix_qc<- mix_qc %>% gather(summary, statistics, 4:8)
+
+ggplot(mix_qc, aes(x=ExternalID, y = statistics)) + 
+        geom_bar(stat = "identity", position = "dodge") +
+        facet_wrap(~summary, scale = "free") +
+        theme(axis.text=element_text(size=10, color= "black"),
+              axis.text.x = element_text(angle = 90, vjust = 0.2,size = 9),
+              axis.title=element_text(size=16,face="bold"),
+              plot.title = element_text(size=18)) +
+        xlab("sample ID") 
+
+ggplot(mix_qc %>% filter(summary == "duplicate_rate_mapped_reads..."), aes(x=ExternalID, y = statistics)) + 
+        geom_bar(stat = "identity", position = "dodge") +
+        theme(axis.text=element_text(size=10, color= "black"),
+              axis.text.x = element_text(angle = 90, vjust = 0.2,size = 9),
+              axis.title=element_text(size=16,face="bold"),
+              plot.title = element_text(size=18)) +
+        xlab("sample ID")  +
+        ylab("duplicates rate")
+```

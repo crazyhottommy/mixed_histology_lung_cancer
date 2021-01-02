@@ -1,0 +1,305 @@
+---
+title: "02_recount_venn_diagramm_upset"
+author: "Ming Tang"
+date: "December 10, 2017"
+output: html_document
+---
+
+```{bash}
+## change the lancet window size, and depth filtering to >=5 for tumor and normal.
+
+mkdir results/recount
+rsync -avhP railab:mixing_histology_snakemake/11recount_table_filter/ results/recount
+```
+
+```{r}
+library(Vennerable)
+library(tidyverse)
+library(here)
+
+recount<- here("results/recount")
+
+files<- list.files(recount, pattern = "filter.txt", full.names = T)
+
+datlist <- lapply(files, function(f) {
+        dat = read.table(f, header =T, sep ="\t", quote = "\"")
+        dat$sample = gsub("_vs.*.txt", "", basename(f))
+        return(dat)
+})
+
+dat <- do.call(rbind, datlist)
+
+dat_recount<- dat %>% 
+        mutate(patient = gsub("(.+)_.+", "\\1", sample)) %>%
+        mutate(mutation = paste(chr, start, annovar_ref, annovar_alt, sep = ":")) %>% 
+        dplyr::select(sample, patient, mutation)
+
+recount_venn<- split(dat_recount, dat_recount$patient)
+
+to_vector<- function(x){
+        m<- split(x, x$sample)
+        lapply(m, function(y) y$mutation )
+}
+
+venn_list<- lapply(recount_venn, to_vector)
+
+plot_venn<- function(x){
+        if (length(x) ==2 || length(x) == 3) {
+                mix.ven<- Venn(x)
+                pdf(paste0(names(x), ".pdf"), width = 6, height = 6)
+                plot(mix.ven, doWeights = TRUE, type = "circles")
+                dev.off()
+        } else if (length(x) == 4){
+                mix.ven<- Venn(x)
+                pdf(paste0(names(x), ".pdf"), width = 6, height = 6)
+                plot(mix.ven, doWeights = FALSE, type = "ellipses")
+                dev.off()
+        } else {
+                return (NULL)
+        }
+}
+
+
+lapply(venn_list, plot_venn)
+
+### Pa29 exclude T3
+Pa29_venn<- Venn(venn_list$Pa29[c(1,2,4)])
+
+pdf("Pa29.pdf", width = 6, height = 6)
+plot(Pa29_venn, doWeights = TRUE, type = "circles")
+dev.off()
+
+
+Venn(venn_list$Pa26)
+
+Venn(venn_list$Pa29[c(1,2,4)])
+
+Venn(venn_list$Pa30)
+
+Venn(venn_list$Pa31)
+Venn(venn_list$Pa33)
+Venn(venn_list$Pa34)
+Venn(venn_list$Pa35)
+Venn(venn_list$Pa36)
+Venn(venn_list$Pa37)
+
+```
+
+### upsetR plot
+
+
+```{r}
+library(UpSetR)
+upset<- dat %>% dplyr:: select(chr, start, annovar_ref, annovar_alt, sample) %>% 
+        mutate( mutation = paste(chr, start, annovar_ref, annovar_alt, sep=":")) %>% 
+        mutate(value =1) %>% 
+        dplyr::select(sample, mutation, value) %>% 
+        distinct() %>% 
+        spread(sample, value, fill = 0)
+
+upset<- dat %>% dplyr:: select(chr, start, annovar_ref, annovar_alt, sample) %>% 
+        filter(!sample %in% c("Pa25_T1", "Pa25_T2", "Pa28_T1", "Pa28_T2",
+                            "Pa29_T3", "Pa32_T1", "Pa32_T2")) %>%
+        mutate( mutation = paste(chr, start, annovar_ref, annovar_alt, sep=":")) %>% 
+        mutate(value =1) %>% 
+        dplyr::select(sample, mutation, value) %>% 
+        distinct() %>% 
+        spread(sample, value, fill = 0)
+
+### change the column name, remove the _
+names(upset)<- names(upset) %>% str_replace("_", "")
+
+
+upset(as.data.frame(upset), keep.order = TRUE,
+      sets = rev(colnames(upset)[-1]),
+      nsets = 30, text.scale = 1.2,
+      number.angles = -45,
+      nintersects = 30,
+      order.by = "freq",
+      mainbar.y.label = "number of mutations shared", 
+      sets.x.label = "number of mutations in each tumor",
+      sets.bar.color = "#56B4E9")
+
+### add annotation 
+
+library(readr)
+#mix_meta<- read_tsv(here("data/mixing_histology_meta.txt"), col_names = T)
+# mix_meta<- mix_meta %>% 
+#         dplyr::rename(cancer_type = Key, ID = `New ID`, sample_type = `Sample Type` ) %>%
+#         mutate(cancer_type = tolower(cancer_type))
+# 
+# mix_meta<- mix_meta %>% as.data.frame() %>% mutate(patient = gsub("[TN][0-9]+", "", ID)) %>%
+#         filter(!patient %in% c("Pa25", "Pa27", "Pa28", "Pa32", "Pa38", "Pa39", "Pa40")) %>%
+#         filter(ID != "Pa29T3") %>%
+#         filter(sample_type != "Normal")
+        
+mix_meta<- read_tsv(here("data/final_meta.tsv"), col_names = T)
+mix_meta<- mix_meta %>% 
+        mutate(cancer_type = case_when(
+                cancer_type == "large cell" ~ "LCNEC",
+                cancer_type == "adeno" ~ "LUAD",
+                cancer_type == "squamous cell" ~ "LUSC",
+                cancer_type == "small cell" ~ "SCLC",
+                cancer_type == "unknown" ~ "NSCLC-NOS"
+        ))
+### add annotation 
+sets<- rev(names(upset)[-1])
+
+mix_meta$ID
+match.ind<- match(sets, mix_meta$ID)
+
+##tibble will not convert characters to factors as compared with data.frame()
+metadata<- tibble::tibble(samples = sets, 
+                          cancer_type = mix_meta$cancer_type[match.ind])
+
+metadata<- as.data.frame(metadata)
+table(metadata$cancer_type)
+
+## choose color
+library(RColorBrewer)
+display.brewer.all()
+set.seed(1)
+cols<- brewer.pal(5, "Dark2")
+
+library(rafalib)
+col.assign<- c(LCNEC="#1B9E77", LUAD="#D95F02", LUSC= "#7570B3", NSCLC-NOS = "#E7298A", SCC="#66A61E")
+
+type.color<- col.assign[metadata$cancer_type]
+type.color.assigned<- setNames(type.color, metadata$cancer_type)
+
+## text color the same as cancer type
+text.color.assigned<- setNames(type.color, metadata$cancer_type)
+
+pdf("results/Fig1_upset_by_patient.pdf", 10, 8)
+
+upset(as.data.frame(upset),
+      keep.order = TRUE,
+      sets = rev(names(upset)[-1]),
+      set.metadata = list(data = metadata, 
+                          plots = list(list(type = "heat", column = "cancer_type", assign = 3, colors = type.color.assigned),
+                                       list(type = "text", column = "cancer_type", assign = 8, colors = text.color.assigned))),
+      order.by = "freq", nsets = 30, text.scale = 1.2,
+      number.angles = -45,
+      mainbar.y.label = "number of mutations shared", 
+      sets.x.label = "number of mutations in each region",
+      sets.bar.color = "#56B4E9",
+      shade.alpha = 0.4,
+      nintersects = 30,
+      mainbar.y.max = 1100)
+
+dev.off()
+```
+
+### clustering
+
+
+```{r}
+## dist calculate distance between rows
+mix.mat<- as.matrix(upset[,-1])
+
+rownames(mix.mat)<- upset$mutation
+
+mix.dist<- dist(t(mix.mat), method = "binary")
+
+plot(hclust(mix.dist))
+
+library(dendextend)
+dend2<- hclust(mix.dist) %>% as.dendrogram() %>% sort(type = "nodes")
+plot(dend2)
+
+labels(dend2)
+## now, no colors
+labels_colors(dend2)
+
+## I want to color according to patient
+mix_meta<- mix_meta %>% separate(ID, c("patient", "tumor"), sep = 4) %>% mutate(ID = paste0(patient, tumor))
+
+ind2<- match(labels(dend2), mix_meta$ID)
+
+patient.ind2<- mix_meta$patient[ind2]
+
+## change the dendrogram label
+library(RColorBrewer)
+display.brewer.all()
+
+cols.patient1<-  brewer.pal(9, "Paired")
+labels_colors(dend2)<- cols.patient1[as.numeric(as.factor(patient.ind2))]
+
+dend2 <- color_branches(dend2, k = 9)
+plot(dend2)
+```
+
+### plot correlation matrix 
+
+a Pearson correlation coefficient estimated for two binary variables will return the phi coefficient. http://stats.stackexchange.com/questions/47987/why-does-the-phi-coefficient-approximates-the-pearsons-correlation
+
+
+```{r}
+library(GenomicRanges)
+phicoef(as.logical(mix.mat[,1]), as.logical(mix.mat[,2]))
+
+## the same as above!
+cor(mix.mat[,1], mix.mat[,2])
+
+
+library(corrplot)
+M<- cor(mix.mat)
+
+corrplot(M, method="circle", type="lower")
+corrplot(M, method="circle")
+
+library(ComplexHeatmap)
+Heatmap(M, cluster_rows = F, cluster_columns = F, name = "phi correlation")
+
+cell_fun = function(j, i, x, y, width, height, fill) {
+	grid.rect(x = x, y = y, width = width *0.98, height = height *0.98, 
+		gp = gpar(col = "grey", fill = fill, lty = 1, lwd = 0.5))
+}
+
+Heatmap(M, cluster_rows = F, cluster_columns = F, name = "phi correlation",
+        cell_fun = cell_fun,
+        rect_gp = gpar(type = "none"))
+
+## cosine distance
+#install.packages("lsa")
+library(lsa)
+cosine(mix.mat[,1], mix.mat[,2])
+col_fun1<- circlize::colorRamp2(c(0, 1), c("white", "red"))
+Heatmap(cosine(mix.mat), cluster_columns = F, cluster_rows = F, name = "cosine distance\nfor mutations",
+        cell_fun = cell_fun,
+        rect_gp = gpar(type = "none"),
+        col = col_fun1)
+
+## add annotation
+
+### heatmap with annotation
+
+library(RColorBrewer)
+
+set.seed(1)
+cols<- brewer.pal(5, "Dark2")
+cols.patient<- brewer.pal(9, "Paired")
+
+mix_df<- mix_meta[,c(1,4)]
+
+rownames(mix_df)<- mix_meta$ID
+
+col.assign<- setNames(cols, unique(mix_df$cancer_type))
+patient.assign<- setNames(cols.patient, unique(mix_df$patient))
+
+### make sure all colors are consistent through all figures
+
+mix_ha<- HeatmapAnnotation(df = mix_df, 
+                           col = list(cancer_type = col.assign, patient = patient.assign),
+                           gp = gpar(col = "black"))
+
+pdf("results/cosine_distance_mutation_heatmap.pdf", 8, 6)
+Heatmap(cosine(mix.mat), cluster_columns = F, cluster_rows = F, name = "cosine distance\nfor mutations",
+        cell_fun = cell_fun,
+        rect_gp = gpar(type = "none"),
+        col = col_fun1,
+        top_annotation = mix_ha)
+
+dev.off()
+```
+

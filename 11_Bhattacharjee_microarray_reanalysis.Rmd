@@ -1,0 +1,226 @@
+---
+title: "2018-02-12_meyerson_lung_cancer_array_reanalysis"
+author: "Ming Tang"
+date: "February 12, 2018"
+output: html_document
+---
+
+Data were downloaded from http://portals.broadinstitute.org/cgi-bin/cancer/datasets.cgi
+http://portals.broadinstitute.org/cgi-bin/cancer/publications/view/62
+
+
+```{r}
+## Load packages
+library(affy)   # Affymetrix pre-processing
+library(limma)  # two-color pre-processing; differential
+                  # expression
+  
+pd_df<- read_tsv(here("data/meyerson_paper_array_data/datasetA_scans.txt"), col_names = T)
+## reorder it as the cel files read in
+pd_df<- arrange(pd_df, scan)
+pd_df<- as.data.frame(pd_df)
+
+## import "phenotype" data, describing the experimental design
+phenoData <- AnnotatedDataFrame(data = pd_df)
+
+## RMA normalization
+celfiles <- list.files("data/meyerson_paper_array_data/", pattern = "CEL", full.names = T)
+meyerson_eset <- justRMA(phenoData=phenoData,
+    filenames=celfiles)
+
+saveRDS(meyerson_eset, here("results/meyerson_est.rds"))
+
+## double check 
+all.equal( rownames(pData(meyerson_eset)) %>% str_replace(".CEL", ""), pData(meyerson_eset)$scan)
+
+## differential expression
+comb <- factor(pData(meyerson_eset)$CLASS)
+meyerson_design <- model.matrix(~ 0 + comb) # describe model to be fit
+colnames(meyerson_design)<- c("ADENO", "CARCINOID", "NORMAL", "SMALL", "SQUAMOUS")
+
+myerson_fit <- lmFit(meyerson_eset, meyerson_design)  # fit each probeset to model
+
+
+make_pairwise_contrast2<- function(design){
+        # a design matrix with readable colnames
+        contrast.matrix<- makeContrasts(SMALLvsADENO = SMALL - ADENO,
+                                        SMALLvsSQUAMOUS= SMALL - SQUAMOUS, 
+                                        SQUAMOUSvsADENO = SQUAMOUS - ADENO,
+                                        levels=design)
+        
+}
+
+
+myerson_cont.matrix <- make_pairwise_contrast2(meyerson_design)
+
+myerson_fit2 <- contrasts.fit(myerson_fit, myerson_cont.matrix)  
+
+myerson_fit2 <- eBayes(myerson_fit2)
+myerson_fit2$coefficients %>% head()
+topTable(myerson_fit2, coef= "SMALLvsADENO", adjust="fdr", sort.by="B", number=Inf) %>% head()
+```
+
+Annotation of the array, AU95 aff array.
+
+```{r}
+source("https://bioconductor.org/biocLite.R")
+biocLite("hgu95a.db")
+
+library("hgu95a.db")
+
+## To list the kinds of things that can be used as keys 
+## use the keytypes method
+keytypes(hgu95a.db)
+
+## To extract viable keys of a particular kind, use the keys method.
+head(keys(hgu95a.db, keytype="ENTREZID"))
+
+## the select method allows you to mao probe ids to ENTREZ gene ids...
+AnnotationDbi:: select(hgu95a.db, ids, "ENTREZID", "PROBEID")
+
+hgu95a_anno_df<- AnnotationDbi::select(hgu95a.db, rownames(exprs(meyerson_eset)), "SYMBOL", "PROBEID")
+
+
+SMALLvsADENO_toptable<- topTable(myerson_fit2, coef= "SMALLvsADENO", adjust="fdr", sort.by="B", number=Inf) %>% rownames_to_column(var = "PROBEID") %>% left_join(hgu95a_anno_df, by = "PROBEID")
+
+make_toptable<- function(fit, coef) {
+        df<- topTable(fit, coef= coef , adjust="fdr", sort.by="B", number=Inf) %>%
+                rownames_to_column(var = "PROBEID") %>% 
+                left_join(hgu95a_anno_df, by = "PROBEID")
+        df
+}
+
+## for each contrast, make the toptable
+library(purrr)
+
+toptables<- map(set_names(colnames(myerson_fit2$contrast)), make_toptable, fit = myerson_fit2)
+
+toptables$SMALLvsADENO %>% head()
+```
+
+
+
+```{r}
+
+make_prerank_from_toptable<- function(df, gene_symbol_column= "SYMBOL" ,
+                                      foldchange_column = "log2FoldChange" ,
+                                      pvalue_column = "pvalue"){
+
+        ranks<- sign(df[[foldchange_column]]) * -log10(df[[pvalue_column]])
+        rank_df<- data.frame(Name = df[[gene_symbol_column]], metric = ranks)
+        rank_df %>% na.omit()
+}
+
+myerson_preranks<- map(toptables, make_prerank_from_toptable, gene_symbol_column= "SYMBOL",
+                                      foldchange_column = "logFC" ,
+                                      pvalue_column = "P.Value")
+
+walk2(myerson_preranks,paste0("myerson_", names(myerson_preranks), ".rnk"), function(x, y) write_tsv( x = x, path = y))
+```
+
+GSEA analysis
+
+```{r}
+library(fgsea)
+myerson_rnks<- list.files(".", pattern = "myerson_.*rnk")
+names(myerson_rnks)<- gsub(".rnk", "", myerson_rnks)
+
+get_ranks<- function(rnk){
+        ranks<- read_tsv(rnk, col_names =T)
+        ranks<- setNames(ranks$metric, ranks$Name)
+        ranks
+}
+
+myerson_ranks<- map(myerson_rnks, get_ranks)
+
+
+hallmark<- gmtPathways("data/msigdb/h.all.v6.1.symbols.gmt")
+reactome<- gmtPathways("data/msigdb/c2.cp.reactome.v6.1.symbols.gmt")
+kegg<- gmtPathways("data/msigdb/c2.cp.kegg.v6.1.symbols.gmt")
+c2_all_curated<- gmtPathways("data/msigdb/c2.all.v6.1.symbols.gmt")
+c2_canonical<- gmtPathways("data/msigdb/c2.cp.v6.1.symbols.gmt")
+myerson_fgseaRes <- map(myerson_ranks, fgsea, pathways = hallmark, minSize=15, maxSize=500, nperm=2000)
+```
+
+### Heatmap
+
+```{r}
+myerson_mat<- exprs(meyerson_eset)
+
+myerson_mat_scaled<- t(scale(t(myerson_mat), center = T, scale =F))
+
+svd(t(myerson_mat_scaled))
+
+library(genefilter)
+myerson_rv<- rowVars(myerson_mat_scaled)
+## select the top 500 most variable genes for clustering
+myerson_idx<- order(-myerson_rv)[1:500]
+
+library(ComplexHeatmap)
+
+Heatmap(myerson_mat_scaled[myerson_idx,])
+
+myerson_df<- data.frame(subtypes = pd_df$CLASS)
+rownames(myerson_df)<- colnames(myerson_mat)
+myerson_col<- circlize::colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+
+myerson_subtype.cols<- brewer.pal(5, "Accent")
+myerson_subtype.cols.assigned<- setNames(myerson_subtype.cols, unique(as.character(myerson_df$subtypes)))
+
+myerson_anno<- HeatmapAnnotation(df = myerson_df, 
+                                  col = list(subtypes = myerson_subtype.cols.assigned))
+
+
+
+Heatmap(myerson_mat_scaled[myerson_idx,], col = myerson_col, top_annotation = myerson_anno,
+        show_column_names = F, show_row_names = F, 
+        clustering_distance_rows = "pearson",
+        clustering_method_rows = "ward.D2",
+        clustering_distance_columns = "pearson",
+        clustering_method_columns = "ward.D2",
+        column_dend_reorder = T,
+        row_dend_reorder = T,
+        use_raster = T,
+        raster_quality = 2,
+        name = "scaled\ngene expression")
+```
+
+### NMF clustering
+
+```{r}
+library(NMF)
+library(CancerSubtypes)
+## should be non-negative values
+mat <- FSbyMAD(myerson_mat, cut.type="topk",value=10000) ## getting the top 10000 regions/genes by MAD scores
+
+## res <- nmf(mat, 2:8, nrun = 100, .options="pv") ## running NMF; this will take time and CPU!
+
+plot(res)
+
+## will give you the best cluster that fits the dataset; we can discuss more which cluster is the best
+predict(res$fit$`4`) ## use 4 if the best cluster is 4 or use the one that is 
+consensusmap(res) ## will give you consensus matrix for object. 
+```
+
+
+### expression matrix
+
+```{r}
+
+meyerson_mat<- exprs(meyerson_eset)
+phenodat<- pData(meyerson_eset)
+head(hgu95a_anno_df)
+
+## normal vs adeno
+table(phenodat$CLASS)
+
+phenodat$CLASS=="ADENO"
+phenodat$CLASS == "NORMAL"
+
+cbind(meyerson_mat[, phenodat$CLASS == "NORMAL"], meyerson_mat[, phenodat$CLASS == "ADENO"]) %>% as.data.frame() %>% rownames_to_column(var= "PROBEID") %>% left_join(hgu95a_anno_df) %>% dplyr::select(SYMBOL, everything()) %>% write_tsv("~/projects/meyerson_PNAS_17Normal_vs_190ADENO.tsv")
+## normal vs squamous
+
+cbind(meyerson_mat[, phenodat$CLASS == "NORMAL"], meyerson_mat[, phenodat$CLASS == "SQUAMOUS"]) %>% as.data.frame() %>% rownames_to_column(var= "PROBEID") %>% left_join(hgu95a_anno_df) %>% dplyr::select(SYMBOL, everything()) %>% write_tsv("~/projects/meyerson_PNAS_17Normal_vs_21SQUAMOUS.tsv")
+
+write_tsv(phenodat, "~/projects/meyerson_meta_data.tsv")
+```

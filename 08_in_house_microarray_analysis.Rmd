@@ -1,0 +1,469 @@
+---
+title: "2017-12-14_microarray"
+author: "Ming Tang"
+date: "December 4, 2017"
+output: html_document
+---
+
+```{r}
+#source("https://bioconductor.org/biocLite.R")
+#biocLite(c("limma", "oligo", "pd.clariom.s.human"))
+library(limma)
+library(oligo)
+library(pd.clariom.s.human)
+
+celFiles <- list.celfiles(here('data/microarray/Andrew_Futreal_SMF-MT-244_WTPico-HuClariomS_101817'), full.names=TRUE)
+
+## exclude Pa25, Pa29T3, Pa28 and Pa32.
+celFiles<- celFiles[c(4:6,10:12,14, 15:20, 24:38)]
+
+
+ab<- read.celfiles(celFiles)
+
+
+
+
+eset<- oligo::rma(ab)
+boxplot(eset,las =2)
+pData(eset)
+
+```
+
+```{r}
+library(annotate)
+library(mouse430a2.db)
+ID <- featureNames(eset)
+Symbol <- getSYMBOL(ID,"mouse430a2.db")
+fData(eset) <- data.frame(ID=ID,Symbol=Symbol)
+
+# not avaiable 
+# getNetAffx(eset, "probeset")
+
+pData(pd.clariom.s.human)
+
+```
+
+
+annotate the probes
+
+```{r}
+library("affycoretools")
+
+library(clariomshumantranscriptcluster.db)
+
+eset <- annotateEset(eset, clariomshumantranscriptcluster.db)
+
+## not working, this oligo built-in annotation  "pd.mouse430.2" does not have annotation object
+eset.annot <- annotateEset(eset, annotation(eset))
+
+eset <- annotateEset(eset, annotation(eset))
+## use mouse430a2.db
+eset.annot <- annotateEset(eset, pd.clariom.s.human)
+
+save(eset, file = "results/mixing_eset.rda")
+
+load(here("results/mixing_eset.rda"))
+```
+
+
+### clustering
+
+```{r}
+
+## subset eset
+colnames(eset)
+filter<- grepl(pattern = "Pa25|Pa27|Pa28|Pa32|Pa38|Pa39|Pa29T3", x= colnames(eset)) 
+eset<- eset[, !filter]
+
+saveRDS(eset, here("data/mixed_histology_eset.rds"))
+exp_mat<- exprs(eset)
+
+X<- t(scale(t(exp_mat), center = T, scale= FALSE))
+sv<- svd(t(X))
+U<- sv$u
+V<- sv$v
+D<- sv$d
+Z<- t(X)%*%V
+
+library(readr)
+mix_meta<- read_tsv(here("data/mixing_histology_meta.txt"), col_names = T)
+mix_meta<- mix_meta %>% 
+        dplyr::rename(cancer_type = Key, ID = `New ID`, sample_type = `Sample Type` ) %>%
+        mutate(cancer_type = tolower(cancer_type)) %>%
+        mutate(cancer_type = case_when(
+                cancer_type == "large cell" ~ "LCNEC",
+                cancer_type == "adeno" ~ "LUAD",
+                cancer_type == "squamous cell" ~ "LUSC",
+                cancer_type == "small cell" ~ "SCC",
+                cancer_type == "unknown" ~ "NSCLC-NOS",
+                TRUE ~ cancer_type
+        ))
+
+# mix_meta<- mix_meta %>% as.data.frame() %>% mutate(patient = gsub("[TN][0-9]+", "", ID)) %>%
+#        filter(!patient %in% c("Pa27", "Pa38", "Pa39", "Pa40")) 
+        
+mix_meta<- mix_meta %>% as.data.frame() %>% mutate(patient = gsub("[TN][0-9]+", "", ID)) %>%
+        filter(!patient %in% c("Pa25", "Pa27", "Pa28", "Pa32", "Pa38", "Pa39", "Pa40")) %>%
+        filter(ID != "Pa29T3")
+
+
+library(stringr)
+rownames(Z)<-  rownames(Z) %>% str_sub(1,6)
+
+all.equal(rownames(Z), mix_meta$ID)
+        
+        
+pca_df<- data.frame(PC1 =Z[,1], PC2 = Z[,2])
+pca_df<- cbind(pca_df, mix_meta)
+
+library(ggrepel)
+col.assign2<- c("LCNEC"="#1B9E77", "LUAD"="#D95F02", "LUSC"= "#7570B3", "NSCLC-NOS" = "#E7298A", "SCC"="#66A61E", "normal" = "black")
+               
+ggplot(pca_df,aes(x=PC1, y=PC2)) + 
+        geom_point(aes(col = cancer_type, shape = cancer_type), size = 2) + 
+                geom_text_repel(aes(label = ID)) +
+        scale_color_manual(values= col.assign2) +
+        theme_bw(base_size = 14) 
+ggsave(here("results/Fig5a_v2.pdf"), width = 8, height = 5)
+ggplot(pca_df,aes(x=PC1, y=PC2)) + 
+        geom_point(aes(col = cancer_type, shape = cancer_type), size = 2) + 
+        scale_color_manual(values= col.assign2) +
+        theme_bw(base_size = 14) 
+
+ggsave(here("results/Fig5a.pdf"), width = 6, height = 4)
+
+library(genefilter)
+
+## remove normals and Pa27
+# exp_mat_tumor<- exp_mat[, c(2 ,3,  5,  6,  8,  9, 11, 12, 13, 14, 16, 17, 19, 20, 22, 23, 25, 26, 28, 29, 31, 32, 34, 35, 37, 38)]
+
+exp_mat_tumor<- exp_mat[, c(2 ,3,  5,  6, 7,  9,10, 12, 13,15, 16, 18,19,21, 22, 24,25, 27, 28)]
+
+rv<- rowVars(log2(exp_mat))
+rv1<- rowVars(log2(exp_mat_tumor))
+## select the top 250 most variable genes for clustering
+idx<- order(-rv)[1:500]
+idx1<- order(-rv1)[1:1000]
+
+X<- t(scale(t(exp_mat), center = T, scale= FALSE))
+colnames(X) <- colnames(X) %>% str_sub(1,6)
+library(ComplexHeatmap) 
+Heatmap(X[idx,], name = "microarray", 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE,
+        clustering_distance_rows = "euclidean",
+        clustering_method_rows = "ward.D2",
+        clustering_distance_columns ="euclidean",
+        clustering_method_columns = "ward.D2")
+colnames(exp_mat) <- colnames(X) 
+pdf(here("results/Fig5a_supp.pdf"), width = 6, height = 4)
+boxplot(log2(exp_mat), las = 2)
+dev.off()
+
+X1<- t(scale(t(exp_mat_tumor), center = T, scale= FALSE))
+colnames(X1) <- colnames(X1) %>% str_sub(1,6)
+library(ComplexHeatmap) 
+Heatmap(X1[idx1,], name = "microarray", 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE,
+        clustering_distance_rows = "euclidean",
+        clustering_method_rows = "ward.D2",
+        clustering_distance_columns ="euclidean",
+        clustering_method_columns = "ward.D2")
+
+
+Heatmap(X1[idx1,], name = "microarray", 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE,
+        clustering_distance_rows = "pearson",
+        clustering_method_rows = "ward.D2",
+        clustering_distance_columns ="pearson",
+        clustering_method_columns = "ward.D2",
+        top_annotation = mix_ha)
+colnames(exp_mat_tumor) <- colnames(X1) 
+boxplot(log2(exp_mat_tumor), las = 2)
+
+### heatmap with annotation
+
+library(RColorBrewer)
+cols<- brewer.pal(6, "Dark2")
+cols.patient<- brewer.pal(12, "Paired")
+
+cols1<- brewer.pal(5, "Dark2")
+cols.patient1<- brewer.pal(12, "Paired")
+
+mix_df<- mix_meta[,c(1,4)]
+mix_df1<- mix_meta[,c(1,4)] %>% filter(cancer_type != "normal")
+
+rownames(mix_df)<- mix_meta$ID
+rownames(mix_df1)<- mix_meta %>% filter(cancer_type != "normal") %>% .$ID
+
+col.assign<- setNames(cols, unique(mix_df$cancer_type))
+patient.assign<- setNames(cols.patient, unique(mix_df$patient))
+
+col.assign1<- setNames(cols1, unique(mix_df1$cancer_type))
+patient.assign1<- setNames(cols.patient1, unique(mix_df1$patient))
+
+mix_ha<- HeatmapAnnotation(df = mix_df, col = list(cancer_type = col.assign, patient = patient.assign))
+mix_ha1<- HeatmapAnnotation(df = mix_df1, col = list(cancer_type = col.assign1, patient = patient.assign1))
+
+Heatmap(X[idx,], name = "scaled\ngene expression", 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE,
+        clustering_distance_rows = "euclidean",
+        clustering_method_rows = "ward.D2",
+        clustering_distance_columns ="euclidean",
+        clustering_method_columns = "ward.D2",
+        bottom_annotation = mix_ha)
+
+
+pdf(here("results/Fig5b.pdf"), 8, 6)
+Heatmap(X1[idx1,], name = "scaled\ngene expression", 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE,
+        clustering_distance_rows = "pearson",
+        clustering_method_rows = "ward.D2",
+        clustering_distance_columns ="pearson",
+        clustering_method_columns = "ward.D2",
+        top_annotation = mix_ha)
+dev.off()
+
+Heatmap(X1, name = "scaled\ngene expression", 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        column_dend_reorder = TRUE,
+        cluster_rows = F,
+        clustering_distance_columns ="euclidean",
+        clustering_method_columns = "ward.D2",
+        bottom_annotation = mix_ha1,
+        use_raster = T)
+dev.off()
+```
+
+### Final figure
+
+```{r}
+## for PC1, PC2, and PC3, choose the maximum absulute loadings 
+variations.3PC<- apply(abs(V[,1:3]), 1, max)
+
+## order according to the loadings and choose the top 500 genes
+genes.3PC<- order(-variations.3PC)[1:1000]
+pdf(here("results/Fig5b.pdf"), 8, 6)
+Heatmap(X1[genes.3PC,], name = "microarray", 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE,
+        clustering_distance_rows = "pearson",
+        clustering_method_rows = "ward.D2",
+        clustering_distance_columns ="pearson",
+        clustering_method_columns = "ward.D2",
+        top_annotation = mix_ha)
+dev.off()
+```
+
+
+
+```{r}
+Heatmap(cor(exp_mat_tumor), top_annotation = mix_ha)
+```
+
+
+#### differential expression
+
+```{r}
+design<- model.matrix(~0 + factor(as.numeric(factor(mix_meta$cancer_type))))
+colnames(design)<- c("adeno", "large", "normal", "small", "squamous")
+
+fit<- lmFit(eset, design)
+contrast.matrix<- makeContrasts(adeno-squamous, adeno-large, adeno-small, large-small, large-squamous, small-squamous, levels=design)
+fit2<- contrasts.fit(fit, contrast.matrix)
+
+fit2<- eBayes(fit2)
+## all the combinations can be found.
+head(fit2$coefficients)
+toptable1<- topTable(fit2, coef=1,number=Inf, sort.by="P")
+toptable2<- topTable(fit2, coef=2,number=Inf, sort.by="P")
+toptable3<- topTable(fit2, coef=3,number=Inf, sort.by="P")
+toptable4<- topTable(fit2, coef=4,number=Inf, sort.by="P")
+toptable5<- topTable(fit2, coef=5,number=Inf, sort.by="P")
+toptable6<- topTable(fit2, coef=6,number=Inf, sort.by="P")
+
+```
+
+### Fold change greate than 2 
+
+```{r}
+head(exp_mat)
+
+exp_mat1<- exp_mat
+colnames(exp_mat1) <- colnames(exp_mat1) %>% str_sub(1,6)
+
+select_fold_probes<- function(N_indx, T_indx){
+        N_probe<- exp_mat1[,N_indx]
+        T_probe<- exp_mat1[,T_indx]
+        folds<- T_probe/N_probe
+        probes<- folds <=0.5 | folds >=2
+        return (probes)
+}
+
+select_fold<- function(N_indx, T_indx){
+        N_probe<- exp_mat1[,N_indx]
+        T_probe<- exp_mat1[,T_indx]
+        folds<- T_probe/N_probe
+        return (folds)
+}
+
+probe_lg_mat<- cbind( select_fold_probes(1,2), select_fold_probes(1,3), 
+       select_fold_probes(4,5), select_fold_probes(4,6),
+       select_fold_probes(7,8), select_fold_probes(7,9),
+       select_fold_probes(10,11), select_fold_probes(10,12), select_fold_probes(10,13), select_fold_probes(10,14),
+       select_fold_probes(15,16), select_fold_probes(15,17), 
+       select_fold_probes(18,19), select_fold_probes(18,20),
+       select_fold_probes(21,22), select_fold_probes(21,23),
+       select_fold_probes(24,25), select_fold_probes(24,26),
+       select_fold_probes(27,28), select_fold_probes(27,29),
+       select_fold_probes(30,31), select_fold_probes(30,32),
+       select_fold_probes(33,34), select_fold_probes(33,35),
+       select_fold_probes(36,37),select_fold_probes(36,38))
+
+folds_mat<- cbind( select_fold_probes(1,2), select_fold_probes(1,3), 
+       select_fold(4,5), select_fold(4,6),
+       select_fold(7,8), select_fold(7,9),
+       select_fold(10,11), select_fold(10,12), select_fold(10,13), select_fold(10,14),
+       select_fold(15,16), select_fold(15,17), 
+       select_fold(18,19), select_fold(18,20),
+       select_fold(21,22), select_fold(21,23),
+       select_fold(24,25), select_fold(24,26),
+       select_fold(27,28), select_fold(27,29),
+       select_fold(30,31), select_fold(30,32),
+       select_fold(33,34), select_fold(33,35),
+       select_fold(36,37),select_fold(36,38))
+
+
+indx<- apply(probe_lg_mat, 1, function(x) any(x)) 
+X2<- exp_mat1[indx, ]
+X2<- t(scale(t(X2), center = T, scale= FALSE))
+
+pdf("results/fold_selected_all_heatmap.pdf", 8, 8)
+Heatmap(X2, name = "scaled\ngene expression", 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE,
+        clustering_distance_rows = "euclidean",
+        clustering_method_rows = "ward.D2",
+        clustering_distance_columns ="euclidean",
+        clustering_method_columns = "ward.D2",
+        bottom_annotation = mix_ha)
+dev.off()
+
+pdf("results/fold_selected_tumor_heatmap.pdf", 8, 8)
+Heatmap(X2[, c(2 ,3,  5,  6,  8,  9, 11, 12, 13, 14, 16, 17, 19, 20, 22, 23, 25, 26, 28, 29, 31, 32, 34, 35, 37, 38)], name = "scaled\ngene expression", 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE,
+        clustering_distance_rows = "euclidean",
+        clustering_method_rows = "ward.D2",
+        clustering_distance_columns ="euclidean",
+        clustering_method_columns = "ward.D2",
+        bottom_annotation = mix_ha1)
+dev.off()
+
+colnames(folds_mat)<- colnames(X2)[c(2 ,3,  5,  6,  8,  9, 11, 12, 13, 14, 16, 17, 19, 20, 22, 23, 25, 26, 28, 29, 31, 32, 34, 35, 37, 38)]
+pdf("results/fold_change_heatmap.pdf", 8, 8)
+Heatmap(folds_mat[indx, ], name = "fold change", 
+        show_row_names = FALSE, show_column_names = TRUE, 
+        row_dend_reorder = TRUE, column_dend_reorder = TRUE,
+        clustering_distance_rows = "euclidean",
+        clustering_method_rows = "ward.D2",
+        clustering_distance_columns ="euclidean",
+        clustering_method_columns = "ward.D2",
+        bottom_annotation = mix_ha1)
+dev.off()
+```
+
+```{r}
+
+annotation_df<- as(eset@featureData, "data.frame")
+dim(X1)
+
+dim(annotation_df)
+all.equal(rownames(X1), rownames(annotation_df))
+
+row_order(hp)
+column_order(hp)
+
+CNV_genes<- rownames(seg_gene_mat)[row_order(hp)]
+CNV_samples<- colnames(seg_gene_mat)[column_order(hp)]
+
+select_genes<- tibble::tibble(SYMBOL = CNV_genes) %>% left_join(annotation_df)
+select_mat<- X1[select_genes$PROBEID, CNV_samples]
+rownames(select_mat)<- select_genes$SYMBOL
+
+pdf("results/Fig4d_sup.pdf", width =8 ,height = 8)
+Heatmap(select_mat, cluster_rows = F, cluster_columns = F, 
+        row_names_gp = gpar(fontsize = 8),
+        name = "RNA expression")
+dev.off()
+write.table(select_mat, here("results/CNV_gene_expression.txt"), row.names = TRUE, col.names = TRUE, sep = "\t", quote =FALSE)
+```
+
+
+
+#### correlation of CNV and expression
+```{r}
+
+seg_gene_df_wd<- seg_gene_df %>% dplyr::select(gene_symbol, log2depth.ratio, sample) %>% spread(sample, log2depth.ratio)
+
+select_genes<- tibble::tibble(SYMBOL = seg_gene_df_wd$gene_symbol) %>% left_join(annotation_df)
+
+select_mat<- X1[select_genes$PROBEID, ]
+rownames(select_mat)<- select_genes$SYMBOL
+ 
+select_cnv<- as.matrix(seg_gene_df_wd[,-1])
+plot(select_mat[1,], select_cnv[1,])
+plot(select_mat[3,], select_cnv[3,])
+
+
+select_mat
+select_cnv[is.nan(select_cnv)]<- NA
+
+cors<- map_dbl(1:nrow(select_mat), function(x) cor(select_cnv[x,], select_mat[x,], use="na.or.complete"))
+
+cors.test<- map_dbl(1:nrow(select_mat), function(x) cor.test(select_cnv[x,], select_mat[x,])$p.value)
+
+cors_df<- tibble(cors = cors, gene = rownames(select_mat))
+cors_df<- cors_df %>%
+        mutate(relationship = if_else(cors >0, "postive", "negative"))
+library(ggpubr)
+
+ggbarplot(cors_df, x = "gene", y = "cors",
+          fill = "relationship",
+          color = "white",            # Set bar border colors to white
+          palette = "jco",            # jco journal color palett. see ?ggpar
+          sort.val = "desc",           # Sort the value in ascending order
+          sort.by.groups = FALSE,     # Don't sort inside each group
+          x.text.angle = 90,          # Rotate vertically x axis texts
+          ylab = "correlation",
+          xlab = FALSE
+          ) +
+        font("x.text", size = 10, color = "blue")
+ggsave(here("results/Fig4_sup1.pdf"), width = 8, height = 6)
+safely_plot<- function(x){
+        df<- tibble(log2.ratio= select_cnv[x,], expression = select_mat[x,])
+        g<- ggscatter(df, x = "log2.ratio", y = "expression",
+                      add = "reg.line",  # Add regressin line
+                      add.params = list(color = "blue", fill = "lightgray"), # Customize reg. line
+                      conf.int = TRUE,
+                      title = rownames(select_mat)[x] ) # Add confidence interval
+        g<- g + stat_cor(method = "pearson", label.x = -1, label.y = 0.5)
+        return(g)
+  
+}
+
+
+cor_plots<- map(1:nrow(select_mat), safely_plot)
+map2(cor_plots, rownames(select_mat), 
+     function(x,y) ggsave(plot=x, filename = here(paste0("results/",y, "_cnv_expression_cor.pdf")), width = 6, height = 4)) 
+
+cors_df %>%
+        left_join(cancer_genes_CNV, by = c("gene" = "gene_symbol")) %>% View()
+```
+
+
+

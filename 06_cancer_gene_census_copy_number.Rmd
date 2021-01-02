@@ -1,0 +1,188 @@
+---
+title: "cancer gene census copy number"
+author: "Ming Tang"
+date: "January 1, 2018"
+output: html_document
+---
+
+### Set up
+
+knitr will force changing current working directory:
+https://philmikejones.wordpress.com/2015/05/20/set-root-directory-knitr/  
+https://github.com/yihui/knitr/issues/277  
+
+or use the ezkintr package https://deanattali.com/blog/ezknitr-package/
+
+```{r "setup", include=TRUE}
+library(knitr)
+library(here)
+root.dir<- here()
+opts_knit$set(root.dir = root.dir)
+```
+
+### read in the data
+
+I am going to check the COSMIC database on cancer genes. Specifically, I want to know which cancer-related genes are found amplified and which are deleted.
+
+The data can be downloaded from http://cancer.sanger.ac.uk/cosmic/census?genome=37#cl_search
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(stringr)
+cancer_gene_census<- read_csv("data/COSMIC_Cancer_gene_Census/cancer_gene_census.csv", col_names = T)
+```
+
+### tidy the data with janitor::clean_names(), dplyr::unnest
+
+The column names have spaces, and in many columns there are mulitple strings separated by `,`.
+
+```{r}
+## dplyr after 0.7.0 use pull to get one column out as a vector, I was using .$
+# https://stackoverflow.com/questions/27149306/dplyrselect-one-column-and-output-as-vector
+
+#cancer_gene_census %>% pull(`Gene Symbol`) %>% unique()
+#cancer_gene_census %>% distinct(`Gene Symbol`)
+
+## extract genes that are amplified or deleted in cancers. in the `mutation types` column search A for amplificaton and D for large deletion.
+
+## use janitor::clean_names() to clean the column names with space.
+cancer_gene_census %>% 
+        clean_names() %>%
+        mutate(mutation_type =strsplit(as.character(mutation_types), ",")) %>% 
+        unnest(mutation_type) %>% tabyl(mutation_type)
+```
+
+It turns out that single mutation_types column is more messy than you think...
+Multiple entries of A and D in different rows. spaces in the column are the devil.
+
+### trim the spaces with stringr::str_trim()
+
+Abbreviations can be found http://cancer.sanger.ac.uk/cosmic/census?genome=37#cl_download
+
+```{r}
+# trim the white space
+cancer_gene_census %>% 
+        clean_names() %>%
+        mutate(mutation_type =strsplit(as.character(mutation_types), ",")) %>% 
+        unnest(mutation_type) %>% 
+        mutate(mutation_type = str_trim(mutation_type)) %>%
+        filter(mutation_type == "A" | mutation_type == "D") %>% tabyl(mutation_type)
+
+cancer_gene_census %>% 
+        clean_names() %>%
+        mutate(mutation_type =strsplit(as.character(mutation_types), ",")) %>% 
+        unnest(mutation_type) %>% 
+        mutate(mutation_type = str_trim(mutation_type)) %>%
+        filter(mutation_type == "A" | mutation_type == "D") %>% count(mutation_type)
+```
+
+### Sanity check
+
+according to the website http://cancer.sanger.ac.uk/cosmic/census?genome=37#cl_sub_tables
+there are should be 40 deletions and 24 amplifications while I am getting 43 and 26, respectively.
+
+```{r}
+cancer_gene_census %>% 
+        clean_names() %>%
+        mutate(mutation_type =strsplit(as.character(mutation_types), ",")) %>% 
+        unnest(mutation_type) %>% 
+        mutate(mutation_type = str_trim(mutation_type)) %>%
+        filter(mutation_type == "A") 
+
+```
+
+I checked by eyes, AKT3 and GRM3 are missing from the table online http://cancer.sanger.ac.uk/cosmic/census/tables?name=amp
+but when I checked the downloaded table, both AKT3 and GRM3 has Amplification in the mutation types column. I am bit confused, but for now I will stick to the downloaded table.
+
+It teaches me an important lesson.   
+
+1. Do not trust data (blindly) from any resource even COSMIC.    
+
+2. Data are always messy. Tidying data is the big job.    
+
+3. Becareful with the data, check with sanity. Browse the data with your eyes may reveal some unexpected things.
+
+### oncogenes are amplified and tumor suppressor genes are always deleted?
+
+In cancer, we tend to think oncogenes are amplified and tumor suppressor genes are deleted to promote tumor progression. Is it true in this setting?
+
+```{r}
+#devtools::install_github("haozhu233/kableExtra")
+library(kableExtra)
+library(knitr)
+cancer_gene_census %>% 
+        clean_names() %>%
+        mutate(mutation_type =strsplit(as.character(mutation_types), ",")) %>% 
+        unnest(mutation_type) %>% 
+        mutate(mutation_type = str_trim(mutation_type)) %>%
+        filter(mutation_type == "A" | mutation_type == "D") %>% 
+        mutate(role = strsplit(as.character(role_in_cancer), ",")) %>%
+        unnest(role) %>%
+        mutate(role = str_trim(role)) %>%
+        filter(role == "TSG" | role == "oncogene") %>%
+        count(role, mutation_type) %>% kable()
+
+cancer_gene_census %>% 
+        clean_names() %>%
+        mutate(mutation_type =strsplit(as.character(mutation_types), ",")) %>% 
+        unnest(mutation_type) %>% 
+        mutate(mutation_type = str_trim(mutation_type)) %>%
+        filter(mutation_type == "A" | mutation_type == "D") %>% 
+        mutate(role = strsplit(as.character(role_in_cancer), ",")) %>%
+        unnest(role) %>%
+        mutate(role = str_trim(role)) %>%
+        filter(role == "TSG" | role == "oncogene") %>%
+        tabyl(role, mutation_type) 
+```
+
+#### what are those genes?
+
+```{r}
+cancer_gene_census %>% 
+        clean_names() %>%
+        mutate(mutation_type =strsplit(as.character(mutation_types), ",")) %>% 
+        unnest(mutation_type) %>% 
+        mutate(mutation_type = str_trim(mutation_type)) %>%
+        filter(mutation_type == "A" | mutation_type == "D") %>% 
+        mutate(role = strsplit(as.character(role_in_cancer), ",")) %>%
+        unnest(role) %>%
+        mutate(role = str_trim(role)) %>%
+        filter(role == "TSG" | role == "oncogene") %>%
+        filter((role == "TSG" & mutation_type == "A") | (role == "oncogene" & mutation_type == "D")) %>%
+        select(gene_symbol, role_in_cancer, role, mutation_types, mutation_type) %>%
+        kable(format = "html", booktabs = T, caption = "TSG and oncogene") %>%
+        kable_styling(latex_options = c("striped", "hold_position"),
+                full_width = F)
+        
+```
+
+majority of the genes from the output can function as either oncogene or tumor suppressor genes (TSG), which is not totally suprising. Cancer is such a complex disease that a function of the gene is dependent on the context (e.g. cancer types). Interestingly, `DROSHA` is the only TSG and is amplified.
+
+```{r}
+cancer_gene_census %>% 
+        clean_names() %>%
+        mutate(mutation_type =strsplit(as.character(mutation_types), ",")) %>% 
+        unnest(mutation_type) %>% 
+        mutate(mutation_type = str_trim(mutation_type)) %>%
+        filter(mutation_type == "A" | mutation_type == "D") %>% 
+        mutate(role = strsplit(as.character(role_in_cancer), ",")) %>%
+        unnest(role) %>%
+        mutate(role = str_trim(role)) %>%
+        filter(role == "TSG" | role == "oncogene") %>%
+        select(gene_symbol, entrez_gene_id, mutation_type, role) %>%
+        write_tsv("data/COSMIC_Cancer_gene_Census/CGC_copynumber_genes.tsv")
+
+cancer_gene_census %>% 
+        clean_names() %>%
+        select(gene_symbol, entrez_gene_id, mutation_types, role_in_cancer) %>%
+        write_tsv("data/COSMIC_Cancer_gene_Census/CGC_cancer_genes.tsv")
+```
+
+```{r}
+CGC_cancer_genes<- read_tsv("data/COSMIC_Cancer_gene_Census/CGC_cancer_genes.tsv")
+cancer_genes_washU<- read_tsv("data/cancer_genes/cancer_gene_kel.txt")
+anti_join(CGC_cancer_genes, cancer_genes_washU, by = c("gene_symbol" = "symbol"))
+
+anti_join(cancer_genes_washU, CGC_cancer_genes,  by = c("symbol" = "gene_symbol"))
+```

@@ -1,0 +1,175 @@
+---
+title: "2018-02-11_GEO_mixing_reanalysis"
+author: "Ming Tang"
+date: "February 11, 2018"
+output: html_document
+---
+
+Paper: https://www.sciencedirect.com/science/article/pii/S155608641730388X
+
+
+```{r}
+source("https://bioconductor.org/biocLite.R")
+#biocLite("GEOquery")
+################################################################
+#   Differential expression analysis with limma
+library(Biobase)
+library(GEOquery)
+library(limma)
+
+# load series and platform data from GEO
+
+gset <- getGEO("GSE94601", GSEMatrix =TRUE, AnnotGPL=TRUE)
+if (length(gset) > 1) idx <- grep("GPL10558", attr(gset, "names")) else idx <- 1
+gset <- gset[[idx]]
+
+# make proper column names to match toptable 
+fvarLabels(gset) <- make.names(fvarLabels(gset))
+
+
+# log2 transform
+ex <- exprs(gset)
+qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+LogC <- (qx[5] > 100) ||
+          (qx[6]-qx[1] > 50 && qx[2] > 0) ||
+          (qx[2] > 0 && qx[2] < 1 && qx[4] > 1 && qx[4] < 2)
+if (LogC) { ex[which(ex <= 0)] <- NaN
+  exprs(gset) <- log2(ex) }
+
+####
+
+featureNames(gset)[1:100]
+sampleNames(gset)
+GSE94601_pd<- pData(gset)
+phenoData(gset)
+
+save(gset, file = "data/GSE94601_eset.rda")
+load(here("data/GSE94601_eset.rda"))
+
+saveRDS(gset, here("data/GSE94601_eset.rds"))
+
+table(GSE94601_pd$`histology:ch1`)
+rownames(GSE94601_pd)
+
+# make sure the same order.
+all.equal(colnames(gset), rownames(GSE94601_pd))
+
+### set up for limma analysis
+
+histology_subtypes<- GSE94601_pd$`histology:ch1` %>% str_trim()
+
+library(rafalib)
+
+design<- model.matrix(~0 + factor(histology_subtypes))
+colnames(design)<- levels(factor(histology_subtypes))
+
+fit <- lmFit(gset, design)
+
+make_pairwise_contrast<- function(design){
+        # a design matrix with readable colnames
+        contrast.matrix<- makeContrasts(LCCvsAC=LCC-AC, SCLCvsAC = SCLC - AC,
+                                        SCLCvsSqCC= SCLC - SqCC, LCCvsSqCC= LCC-SqCC, 
+                                        SqCCvsAC = SqCC - AC,
+                                        levels=design)
+        
+}
+
+
+GSE94601_cont.matrix <- make_pairwise_contrast(design)
+
+GSE94601_fit2 <- contrasts.fit(fit, GSE94601_cont.matrix)
+GSE94601_fit2 <- eBayes(GSE94601_fit2)
+names(GSE94601_fit2)
+GSE94601_fit2$coefficients %>% head()
+
+GSE94601_toptables<- map(set_names(colnames(GSE94601_fit2$contrast), colnames(GSE94601_fit2$contrast)), function(x) topTable(GSE94601_fit2, coef = x, adjust="fdr", sort.by="B", number=Inf) %>%
+        dplyr::select(ID,adj.P.Val,P.Value,t,B,logFC,Gene.symbol,Gene.title))
+
+GSE94601_toptables$LCCvsAC %>% head()
+
+make_prerank_from_toptable<- function(df, gene_symbol_column= "SYMBOL",
+                                      foldchange_column = "logFC",
+                                      pvalue_column = "pvalue"){
+
+        ranks<- sign(df[[foldchange_column]]) * -log10(df[[pvalue_column]])
+        rank_df<- data.frame(Name = df[[gene_symbol_column]], metric = ranks)
+        rank_df %>% na.omit()
+}
+
+GSE94601_preranks<- map(GSE94601_toptables, make_prerank_from_toptable, 
+                        gene_symbol_column=  "Gene.symbol",
+                        foldchange_column = "logFC",
+                        pvalue_column = "P.Value" )
+
+
+GSE94601_preranks$LCCvsAC %>% na.omit() %>% head()
+
+walk2(GSE94601_preranks,paste0("GSE94601_", names(GSE94601_preranks), ".rnk"), function(x, y) write_tsv( x = x, path = y))
+```
+
+### GSEA analysis
+
+```{r}
+library(fgsea)
+GSE94601_rnks<- list.files(".", pattern = "GSE94601_.*rnk")
+names(GSE94601_rnks)<- gsub(".rnk", "", GSE94601_rnks)
+
+get_ranks<- function(rnk){
+        ranks<- read_tsv(rnk, col_names =T)
+        ranks<- setNames(ranks$metric, ranks$Name)
+        ranks
+}
+
+GSE94601_ranks<- map(GSE94601_rnks, get_ranks)
+
+
+hallmark<- gmtPathways("data/msigdb/h.all.v6.1.symbols.gmt")
+reactome<- gmtPathways("data/msigdb/c2.cp.reactome.v6.1.symbols.gmt")
+kegg<- gmtPathways("data/msigdb/c2.cp.kegg.v6.1.symbols.gmt")
+c2_all_curated<- gmtPathways("data/msigdb/c2.all.v6.1.symbols.gmt")
+c2_canonical<- gmtPathways("data/msigdb/c2.cp.v6.1.symbols.gmt")
+GSE94601_fgseaRes <- map(GSE94601_ranks, fgsea, pathways = hallmark, minSize=15, maxSize=500, nperm=2000)
+```
+### PCA and heatmap
+
+```{r}
+GSE94601_mat<- exprs(gset)
+
+GSE94601_mat_scaled<- t(scale(t(GSE94601_mat), center = T, scale =F))
+
+svd(t(GSE94601_mat_scaled))
+
+library(genefilter)
+GSE94601_rv<- rowVars(GSE94601_mat_scaled)
+## select the top 500 most variable genes for clustering
+GSE94601_idx<- order(-GSE94601_rv)[1:500]
+
+library(ComplexHeatmap)
+
+Heatmap(GSE94601_mat_scaled[GSE94601_idx,])
+
+GSE94601_df<- data.frame(subtypes = histology_subtypes)
+rownames(GSE94601_df)<- colnames(GSE94601_mat)
+GSE94601_col<- circlize::colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+
+GSE94601_subtype.cols<- brewer.pal(5, "Set1")
+GSE94601_subtype.cols.assigned<- setNames(GSE94601_subtype.cols, unique(as.character(histology_subtypes)))
+
+GSE94601_anno<- HeatmapAnnotation(df = GSE94601_df, 
+                                  col = list(subtypes = GSE94601_subtype.cols.assigned))
+
+
+
+Heatmap(GSE94601_mat_scaled[GSE94601_idx,], col = GSE94601_col, top_annotation = GSE94601_anno,
+        show_column_names = F, show_row_names = F, 
+        clustering_distance_rows = "pearson",
+        clustering_method_rows = "ward.D2",
+        clustering_distance_columns = "pearson",
+        clustering_method_columns = "ward.D2",
+        name = "scaled\ngene expression")
+
+
+# already pre-scaled
+pca_prcomp<- prcomp(t(GSE94601_mat), center = FALSE, scale. = FALSE)
+```
+

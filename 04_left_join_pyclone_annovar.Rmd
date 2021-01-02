@@ -1,0 +1,42 @@
+---
+title: "04_left_join_pyclone_annovar"
+author: "Ming Tang"
+date: "December 13, 2017"
+output: html_document
+---
+
+```{bash}
+cd results
+rsync -avhP railab:mixing_histology_snakemake/11pyclone_annovar .
+mkdir pyclone_annotate
+```
+
+
+```{r}
+library(here)
+library(tidyverse)
+
+
+join_annovar_pyclone<- function(loci_file, annovar_file){
+        loci<- read_tsv(loci_file, col_names = T, col_types = cols(.default = col_character()))
+        loci<- loci %>% separate(mutation_id, c("patient", "chr", "start")) %>% 
+        dplyr::rename(sample = sample_id)
+        oprefix<- gsub("_pyclone_annovar.hg19_multianno.txt", "", basename(annovar_file))
+        annovar<- read_tsv(annovar_file, col_names = T, col_types = cols(.default = col_character()))
+        annovar<- annovar %>% mutate(sample = gsub("([0-9A-Za-z]+.+)_vs_.+", "\\1", oprefix))
+
+        left_join(annovar, loci, by =c("Chr" = "chr", "Start" = "start", "sample" = "sample")) %>% write_tsv(paste0("results/pyclone_annotate/", oprefix, "_annovar_pyclone.tsv"))
+        
+}
+
+
+
+loci_files<- list.files(here("results/pyclone"), pattern = "loci.tsv", recursive = T, full.names = T)
+
+
+loci_files<- c(rep(loci_files, each = 2)[1:6], rep(loci_files[4], 4), rep(loci_files, each = 2)[9:24])
+
+annovar_files<- list.files(here("results/11pyclone_annovar"), pattern = "*.+hg19_multianno.txt", full.names = T)
+
+walk2(loci_files, annovar_files, join_annovar_pyclone)
+```

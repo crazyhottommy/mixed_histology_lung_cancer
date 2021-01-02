@@ -1,0 +1,249 @@
+---
+title: "05_pyclone_annovar_cancer_gene_anno"
+author: "Ming Tang"
+date: "December 13, 2017"
+output: html_document
+---
+
+```{bash}
+cd results
+mkdir pyclone_annotate_cancer_genes
+```
+### cancer gene list
+
+```{r}
+# cancer_genes<- read_tsv(here("data/cancer_genes/cancer_gene_kel.txt"), col_names = T)
+
+# use cancer gene census from COSMIC!
+cancer_genes<- read_tsv(here("data/COSMIC_Cancer_gene_Census/CGC_cancer_genes.tsv"), col_names = T)
+cancer_genes<- dplyr::rename(cancer_genes, symbol = gene_symbol)
+
+cancer_gene_mutations<- read_tsv(here("data/cancer_genes/wustl_curated_variants.tsv"), col_names = T,
+                                 col_types = cols(.default = col_character()))
+
+annovar_pyclone_files<- list.files("results/pyclone_annotate/", pattern = "_annovar_pyclone.tsv", full.names = T)
+
+annovar_cancer_gene_anno<- function(x){
+        oprefix<- gsub("_annovar_pyclone.tsv", "", basename(x))
+        annovar_pyclone<- read_tsv(x, col_names = T, col_types = cols(.default = col_character()))
+
+        annovar_pyclone_cancer_genes<- left_join(annovar_pyclone, cancer_gene_mutations, by = c("Chr" = "chromosome", "Start" = "start", "Ref" = "read", "Alt" = "variant")) %>%
+                mutate(cancer_related_genes = ifelse(Gene.refGene %in% cancer_genes$symbol, 1, 0)) %>%
+                dplyr::select(-starts_with("ExAC"), -starts_with("gnomAD"), -starts_with("CL", ignore.case = FALSE)) %>%
+                mutate(cancer_gene_mutation = ifelse(is.na(gene), 0, 1 ))
+        write_tsv(annovar_pyclone_cancer_genes, paste0("results/pyclone_annotate_cancer_genes/", oprefix, "_pyclone_cancer_genes.tsv"))
+}
+
+walk(annovar_pyclone_files, annovar_cancer_gene_anno )
+
+
+```
+
+
+```{r}
+cadd_files<- list.files(here("results/pyclone_annotate_cancer_genes"), pattern = "*tsv", full.names = T) 
+
+cadd_dat_list <- lapply(cadd_files, function(f) {
+        dat = read_tsv(f, col_names = T, col_types = cols(.default = col_character()))
+        return(dat)
+})
+
+cadd_dat <- do.call(rbind, cadd_dat_list)
+
+cadd_dat<- cadd_dat %>%
+        filter(!sample %in% c("Pa25_T1", "Pa25_T2", "Pa28_T1", "Pa28_T2",
+                            "Pa29_T3", "Pa32_T1", "Pa32_T2"))
+
+cadd_dat<- cadd_dat %>%
+        filter(!sample %in% c("Pa25_T1", "Pa25_T2", "Pa28_T1", "Pa28_T2",
+                            "Pa29_T3", "Pa32_T1", "Pa32_T2")) %>%
+        dplyr::select(Chr, Start, End, sample, Gene.refGene, Func.refGene,ExonicFunc.refGene,
+                      cluster_id, variant_allele_frequency, cellular_prevalence,
+                      cancer_related_genes, cancer_gene_mutation) %>%
+        mutate(patient = gsub("_T[0-9]+", "", sample)) %>%
+        mutate(mutation_id =paste(patient, Chr, Start, End, sep = ":")) %>%
+        mutate(cellular_prevalence = as.numeric(cellular_prevalence)) %>%
+        filter(!is.na(cellular_prevalence))
+
+        #         mutate(clonality = case_when(
+        #         cellular_prevalence > 0.5 ~ "clonal",
+        #         cellular_prevalence > 0.1 & cellular_prevalence <= 0.5 ~ "subclonal",
+        #         cellular_prevalence <= 0.1 ~ "nonclonal"
+        # ))
+
+length(unique(cadd_dat$sample))
+
+
+head(cadd_dat)
+
+```
+
+### clonal mutation percentage
+
+```{r}
+cadd_nest<- cadd_dat %>% 
+        group_by(patient) %>%
+        mutate(variant_allele_frequency= as.numeric(variant_allele_frequency)) %>%
+        nest()
+
+filter_snv<- function(df){
+        return(all(df$variant_allele_frequency != 0))
+}
+
+
+share_clonal_percent<- function(df){
+        total<- df %>% nrow()
+        
+        share_clonal<- df %>% 
+        group_by(mutation_id) %>%
+        nest() %>%
+        mutate(share = map_lgl(data, filter_snv)) %>%
+        filter(share) %>%
+        unnest() %>%
+        filter(cellular_prevalence > 0.5) %>%
+        nrow()
+        
+        return(share_clonal/total)
+        
+}
+
+private_clonal_percent<- function(df){
+        total<- df %>% nrow()
+        private_clonal<- df %>% 
+        group_by(mutation_id) %>%
+        nest() %>%
+        mutate(share = map_lgl(data, filter_snv)) %>%
+        filter(!share) %>%
+        unnest() %>%
+        filter(cellular_prevalence > 0.5) %>%
+        nrow()
+        
+        return(private_clonal/total)
+}
+
+
+clonal_percentage<- cadd_nest %>%
+        mutate(share_clonal_percent = map_dbl(data, share_clonal_percent )) %>%
+        mutate(private_clonal_percent = map_dbl(data, private_clonal_percent))
+
+clonal_percentage$share_clonal_percent %>% mean()
+clonal_percentage$share_clonal_percent %>% median()
+
+clonal_percentage$share_clonal_percent %>% range()
+
+clonal_percentage$private_clonal_percent %>% mean()
+clonal_percentage$private_clonal_percent %>% median()
+
+clonal_percentage$private_clonal_percent%>% range()
+```
+
+
+#### pyclone scatterplot visualization
+
+```{r}
+cadd_nest<- cadd_dat %>% 
+        dplyr::select(-Chr, -Start, -End) %>%
+        group_by(patient) %>%
+        nest()
+
+loci<- cadd_nest$data[[4]]
+     
+loci_filter<- loci %>% filter(cancer_related_genes =="1" | cancer_gene_mutation =="1") %>%
+                                        filter(Func.refGene == 'exonic') %>%
+                                        filter(ExonicFunc.refGene %in% c("frameshift deletion",
+                                                                         "nonframeshift deletion",
+                                                                         "nonsynonymous SNV",
+                                                                         "stopgain")) %>%
+        mutate(id = paste(mutation_id, Gene.refGene, sep = ":"))
+table(loci_filter$id, loci_filter$clonality)
+```
+
+
+```{r}
+
+make_CCF<- function(loci, sample1, sample2){
+        loci_df2<- loci %>%
+        #group_by(cluster_id) %>% 
+        #mutate(cluster_size = n()) %>%
+        #filter(cluster_size >=10) %>%
+        #ungroup() %>%
+        spread(sample, cellular_prevalence) %>%
+        mutate(cluster_id = as.factor(cluster_id))
+
+ggplot(loci_df2, aes_string(x =  sample1, y = sample2)) +
+                geom_point(aes(color = cluster_id), size = 2, alpha = 0.5) +
+                scale_color_discrete(guide = guide_legend(title = "cluster")) +
+                geom_text_repel(data=loci_df2 %>% 
+                                        filter(.data[[sample1]] > 0.1 | .data[[sample2]] > 0.1) %>%
+                                        filter(cancer_related_genes =="1" | cancer_gene_mutation =="1") %>%
+                                        filter(Func.refGene == 'exonic') %>%
+                                        filter(ExonicFunc.refGene %in% c("frameshift deletion",
+                                                                         "nonframeshift deletion",
+                                                                         "nonsynonymous SNV",
+                                                                         "stopgain")), aes(label=Gene.refGene))+
+                coord_equal() +
+                theme_bw(base_size = 20) +
+                theme(legend.position = "none")
+
+}
+
+
+CCF_plots<- cadd_nest %>%
+        mutate(plots = map2(data, patient, function(x,y) make_CCF(loci = x, sample1 = paste0(y, "_T1"), sample2= paste0(y, "_T2"))))
+
+CCF_plots
+
+walk2(CCF_plots$patient, CCF_plots$plots, function(x,y) ggsave(plot = y, filename = here(paste0("results/pyclone_plots/", x, "_CCF_cancer_related_genes.pdf")), width = 6, height = 6))
+
+make_CCF(loci = cadd_nest$data[[9]], sample1 = "Pa37_T1", sample2 = "Pa37_T2")
+make_CCF(loci = cadd_nest$data[[8]], sample1 = "Pa36_T1", sample2 = "Pa36_T2")
+make_CCF(loci = cadd_nest$data[[7]], sample1 = "Pa35_T1", sample2 = "Pa35_T2")
+make_CCF(loci = cadd_nest$data[[6]], sample1 = "Pa34_T1", sample2 = "Pa34_T2")
+make_CCF(loci = cadd_nest$data[[5]], sample1 = "Pa33_T1", sample2 = "Pa33_T2")
+make_CCF(loci = cadd_nest$data[[4]], sample1 = "Pa31_T1", sample2 = "Pa31_T2")
+make_CCF(loci = cadd_nest$data[[3]], sample1 = "Pa30_T1", sample2 = "Pa30_T2")
+make_CCF(loci = cadd_nest$data[[1]], sample1 = "Pa26_T1", sample2 = "Pa26_T2")
+
+make_CCF(loci = cadd_nest$data[[2]], sample1 = "Pa29_T1", sample2 = "Pa29_T2")
+make_CCF(loci = cadd_nest$data[[2]], sample1 = "Pa29_T1", sample2 = "Pa29_T4")
+ggsave(here("results/pyclone_plots/Pa29_2_CCF_cancer_related_genes.pdf"), width = 6, height = 6)
+make_CCF(loci = cadd_nest$data[[2]], sample1 = "Pa29_T2", sample2 = "Pa29_T4")
+ggsave(here("results/pyclone_plots/Pa29_3_CCF_cancer_related_genes.pdf"), width = 6, height = 6)
+
+
+make_CCF2<- function(loci, sample1, sample2){
+        loci_df2<- loci %>%
+        #group_by(cluster_id) %>% 
+        #mutate(cluster_size = n()) %>%
+        #filter(cluster_size >=10) %>%
+        #ungroup() %>%
+        spread(sample, cellular_prevalence) %>%
+        mutate(cluster_id = as.factor(cluster_id))
+
+ggplot(loci_df2, aes_string(x =  sample1, y = sample2)) +
+                geom_point(aes(color = cluster_id), size = 2, alpha = 0.5) +
+                scale_color_discrete(guide = guide_legend(title = "cluster")) +
+                geom_text_repel(data=loci_df2 %>% 
+                                        filter(cancer_gene_mutation =="1"),  
+                                aes(label=Gene.refGene), size = 10)+
+                coord_equal() +
+                theme_bw(base_size = 20) +
+                theme(legend.position = "none")
+
+}
+
+
+
+CCF_plots2<- cadd_nest %>%
+        mutate(plots = map2(data, patient, function(x,y) make_CCF2(loci = x, sample1 = paste0(y, "_T1"), sample2= paste0(y, "_T2"))))
+
+walk2(CCF_plots2$patient, CCF_plots2$plots, function(x,y) ggsave(plot = y, filename = here(paste0("results/pyclone_plots/", x, "_CCF_cancer_gene_mutations.pdf")), width = 6, height = 6))
+
+make_CCF2(loci = cadd_nest$data[[2]], sample1 = "Pa29_T1", sample2 = "Pa29_T2")
+make_CCF2(loci = cadd_nest$data[[2]], sample1 = "Pa29_T1", sample2 = "Pa29_T4")
+ggsave(here("results/pyclone_plots/Pa29_2_CCF_cancer_gene_mutations.pdf"), width = 6, height = 6)
+make_CCF2(loci = cadd_nest$data[[2]], sample1 = "Pa29_T2", sample2 = "Pa29_T4")
+ggsave(here("results/pyclone_plots/Pa29_3_CCF_cancer_gene_mutations.pdf"), width = 6, height = 6)
+```
+
+
